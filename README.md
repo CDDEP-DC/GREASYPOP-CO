@@ -1,4 +1,4 @@
-## Geographically REAlistic SYnthetic POPulation using Combinatorial Optimization
+### Geographically REAlistic SYnthetic POPulation using Combinatorial Optimization
 
 ![logo](greasypop-logo.png)
 
