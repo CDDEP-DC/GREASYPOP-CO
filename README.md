@@ -1,5 +1,10 @@
+## Geographically REAlistic SYnthetic POPulation using Combinatorial Optimization
 
-#### generates a synthetic population and network of regular household, school, and work contacts for a specified region from provided US census data
+![logo](greasypop-logo.png)
+
+
+* generates a synthetic population from US census data for a specified region
+* generates a synthetic contact network of regular household, school, and work contacts
 
 # how to use
 
