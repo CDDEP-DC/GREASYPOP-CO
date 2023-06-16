@@ -1,5 +1,5 @@
 
-#### generates a synthetic population and network of regular household, school, and work contacts from US census data
+#### generates a synthetic population and network of regular household, school, and work contacts for a specified region from provided US census data
 
 # how to use
 
