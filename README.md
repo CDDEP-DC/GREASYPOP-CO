@@ -3,8 +3,22 @@
 ![logo](greasypop-logo.png)
 
 
-* generates a synthetic population from US census data for a specified region
+* generates a synthetic population (people, households, schools, workplaces) from US census data for a specified region, at census block group (CBG) resolution
 * generates a synthetic contact network of regular household, school, and work contacts
+
+## files in this project
+
+    config.json - specify the region for which to generate the synth pop; misc other settings
+    census.py - processes input data; converts census and PUMS to a common format; extracts school and workplace data needed for synthesis
+	CO.jl - performs combinatorial optimization: selects households for each CBG from microdata samples (PUMS)
+	synthpop.jl - script that calls functions for population synthesis from the files below
+	households.jl - fills each household from CO.jl with people generated from PUMS data; also creates group quarters (GQ)
+	schools.jl - reads school data prepared by census.py and assigns students created in households.jl
+	workplaces.jl - creates workplaces based on data from census.py and assigns workers created in households.jl; also assigns teachers to schools and staff to GQ's
+	netw.jl - generates synthetic contact network
+	utils.jl, fileutils.jl - various utility functions
+	export_synthpop.jl - exports synth pop to csv
+	export_network.jl - exports contact network to mtx
 
 # how to use
 
@@ -92,7 +106,7 @@
     can be state or county FIPS codes (or any subset of cbg code starting with state FIPS)
 
     inc_adj: current year ADJINC from PUMS data dictionary https://www.census.gov/programs-surveys/acs/microdata.html
-    inc_cats: arbirary labels for income categories
+    inc_cats: arbitrary labels for income categories
     inc_cols: corresponding sets of columns from ACS table B19001
 
     commute_states: state FIPS codes that are within commute distance of synth pop (include synth pop states themselves)
@@ -107,7 +121,7 @@
     python census.py
     julia -p auto CO.jl 
         (searches for optimal combination of samples to match census data, takes a while)
-        (uses mutiple local processors; "-p auto" uses all available cores)
+        (uses multiple local processors; "-p auto" uses all available cores)
     julia synthpop.jl
 
 ### 5. (optional) export population and/or network to csv
@@ -119,3 +133,6 @@
 
 #### exports appear in folder "pop_export"
 #### network is exported as a sparse matrix in Matrix Market native exchange format https://math.nist.gov/MatrixMarket/formats.html#MMformat
+
+Note this is not a complete contact network for a population; it only describes contacts *within* households, group quarters, schools, and workplaces. You will probably need to generate other types of contacts depending on what you're using this for.
+
