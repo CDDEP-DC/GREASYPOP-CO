@@ -71,9 +71,9 @@ end
 function generate_schools()
 
     dConfig = tryJSON("config.json")
-    n_schools = get(dConfig, "n_closest_schools", 5)
+    n_schools::Int = get(dConfig, "n_closest_schools", 5)
     ## assign students to closest avaiable school (90%) or 2nd closest (10%)
-    prob_closest = get(dConfig, "p_closest_school", 0.9)
+    prob_closest::Float64 = get(dConfig, "p_closest_school", 0.9)
 
     sch_capacity = read_sch_cap()
     closest = find_closest(n_schools)

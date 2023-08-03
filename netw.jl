@@ -25,19 +25,42 @@ end
 
 function read_gq_ppl()
     ## gq residents
-    gqs = dser_path("jlse/gqs.jlse")
-    gq_res = Dict(k => v.residents for (k,v) in gqs)
-    ## gq employees
-    gq_workers = dser_path("jlse/gq_workers.jlse")
+    gq_res = Dict(k => v.residents for (k,v) in dser_path("jlse/gqs.jlse"))
+    ## gq employees; remove extra worker tag
+    gq_workers = Dict(k => [x[1:3] for x in v] for (k,v) in dser_path("jlse/gq_workers.jlse"))
     return vecmerge(gq_res, gq_workers)
 end
 
+function assign_teachers_to_grades(school_key::String15,students_by_grade::Vector{S},sch_workers::Dict{String15,Vector{Pkey}}) where S<:Any
+    ## person ids of teachers in this school
+    teachers = sch_workers[school_key]
+    ## a school could have been created with teachers but no students
+    if isempty(students_by_grade) 
+        return [(t...,String3("0")) for t in teachers]
+    else
+        ## proportionmap from statsbase: p students in each grade in this school
+        pstudents = proportionmap([x[4]::String3 for x in students_by_grade])
+        ## n teachers by grade, assuming it's exactly proportional to students
+        n_tmp = Dict(k=>v*length(teachers) for (k::String3,v::Float64) in pstudents)
+        ## round to integers and expand into a vector having the same length as "teachers"
+        teacher_grades = reduce(vcat, fill(k,v) for (k::String3,v::Int) in Dict(keys(n_tmp) .=> lrRound(collect(values(n_tmp)))))
+        ## append grade to each teacher's person id (teacher order is already random)
+        return [(t...,g) for (t::Pkey,g::String3) in zip(teachers,teacher_grades)]
+    end
+end
+
 function read_sch_ppl()
-    ## school students
-    sch_students = dser_path("jlse/sch_students.jlse")
-    ## teachers
-    sch_workers = dser_path("jlse/sch_workers.jlse")
-    return vecmerge(sch_students,sch_workers)
+    ## for looking up the school grade of each student:
+    ppl = Dict(k=>v.sch_grade for (k,v) in dser_path("jlse/people.jlse"))
+    ## append each student's grade to their person id
+    sch_students_x_grade = Dict{String15,Vector{Tuple{fieldtypes(Pkey)...,String3}}}(k=>[(personkey..., ppl[personkey]) 
+        for personkey in v] for (k,v) in dser_path("jlse/sch_students.jlse"))
+    ## strip income category from school workers, leaving only person id
+    sch_workers = Dict(k => [x[1:3] for x in v] for (k,v) in dser_path("jlse/sch_workers.jlse"))
+    ## assign a grade to each teacher and append it to their person id
+    teachers_by_grade = Dict(k => assign_teachers_to_grades(k,v,sch_workers) for (k,v) in sch_students_x_grade)
+    ## return students and teachers by school
+    return vecmerge(sch_students_x_grade,teachers_by_grade)
 end
 
 function read_hh_ppl()
@@ -45,31 +68,10 @@ function read_hh_ppl()
     return Dict(k => v.people for (k,v) in hh)
 end
 
-## returns a list of all groups of people in "institutions" 
-##   (excluding households, treating those separately)
-function read_groups()
-    ## gq residents and employees
-    gq_ppl = read_gq_ppl()
-    ## school students and teachers
-    sch_ppl = read_sch_ppl()
-    ## from workplaces.jl:
-    company_workers = dser_path("jlse/company_workers.jlse")
-
-    return [collect(values(gq_ppl)); 
-            collect(values(sch_ppl));
-            collect(values(company_workers))]
-end
-
 ## "dummies" = people commuting from outside the synth area, have no household or location info
-## (could get workplaces.jl to save these as they're generated)
 function get_dummies()
-    sch_workers = dser_path("jlse/sch_workers.jlse")
-    gq_workers = dser_path("jlse/gq_workers.jlse")
-    company_workers = dser_path("jlse/company_workers.jlse")
-    dummies_sch = reduce(vcat, [filter(x -> x[3]==0, v) for v in values(sch_workers)])
-    dummies_gq = reduce(vcat, [filter(x -> x[3]==0, v) for v in values(gq_workers)])
-    dummies_work = reduce(vcat, [filter(x -> x[3]==0, v) for v in values(company_workers)])
-    return [dummies_sch; dummies_gq; dummies_work]
+    ## remove extra worker tag
+    return [x[1:3] for x in dser_path("jlse/work_dummies.jlse")]
 end
 
 ## integer index for each "real" person in synth pop, and for each "dummy" person
@@ -86,13 +88,113 @@ function person_indices()
         )
 end
 
+## connects the keys in keyvec into a stochastic block model (SBM) network
+## - note, the degree distribution within blocks in an SBM is similar to 
+##      a random (erdos-renyi) network. For a more realistic degree distribution (e.g., with hubs)
+##      try a degree-corrected SBM (Karrer & Newman 2010, https://arxiv.org/abs/1008.3926)
+##
+## if use_groups is true, the 4th element of a key should be the group identity (the first 3 would be a person key)
+## returns a list of (source, dest) edges where source and dest are keys in keyvec
+function connect_SBM(keyvec::Vector{T}, K::Int, min_N::Int, assoc_coeff::Float64, use_groups::Bool=true) where T<:Any
+    keyvec = unique(keyvec) ## duplicates would result in self-connections
+    n = length(keyvec)
+    if n < 2 ## nothing to connect
+        return Tuple{T,T}[]
+    elseif n < min_N ## more than one but less than thresh = fully connected
+        g = complete_graph(n)
+        ## indices in g correspond to positions in keyvec
+        return [(keyvec[x.src],keyvec[x.dst]) for x in edges(g)]
+    else
+        ## more than min_N = use SBM
+        if use_groups
+            ## group membership is based on key element #4
+            group_labels = unique(k[4] for k in keyvec)
+            group_indices = [findall(k->k[4]==g, keyvec) for g in group_labels] 
+        else 
+            ## otherwise put everyone in one group
+            group_indices = [eachindex(keyvec)] 
+        end
+
+        len_grp_idx = length.(group_indices) ## number of vertices in each group
+        n_vec = filter(x->x>0, len_grp_idx) ## drop any 0-size groups
+        n_groups = length(n_vec)
+        w_planted = Diagonal(fill(K,n_groups)) ## contact matrix if no group mixing
+        prop_i = n_vec ./ sum(n_vec) ## proportion in each group
+        w_random = repeat(transpose(prop_i) * K, n_groups) ## contact matrix if random group mixing
+        c_matrix = assoc_coeff * w_planted + (1 - assoc_coeff) * w_random  ## linear interpolation between planted and random contact matrices
+
+        ## can't have more than n connections to a group
+        for r in eachrow(c_matrix)
+            r .= min.(r,n_vec)
+        end
+        ## can't have more than n-1 within-group connections
+        d_tmp = view(c_matrix, diagind(c_matrix))
+        d_tmp .= min.(d_tmp, n_vec .- 1)
+
+        ## note, graph gen function takes group sizes in n_vec; the vertices/edges in the
+        ##  resulting graph are just numbered based on group sizes, in the order given in n_vec
+        ##  to recover keys, need to translate g index -> keyvec index -> key
+        g = stochastic_block_model(c_matrix,n_vec)
+        keyvec_indices = reduce(vcat, group_indices) ## for translating indices
+
+        ## algo sometimes creates 0-degree vertices; not technically wrong, but force them to have 1 connection anyway
+        fix_zeros = findall(degree(g).==0)
+        for x in fix_zeros
+            add_edge!(g, x, rand(vertices(g)))
+        end
+
+        ## convert indices in g to keyvec keys for each edge
+        result = Tuple{T,T}[]
+        for x in edges(g)
+            if use_groups
+                (group_labels[findfirst(c->in(x.src,c) , ranges(len_grp_idx))] == keyvec[keyvec_indices[x.src]][4]) &&
+                    (group_labels[findfirst(c->in(x.dst,c) , ranges(len_grp_idx))] == keyvec[keyvec_indices[x.dst]][4]) ||
+                    throw("group assignment error")
+            end
+            
+            push!(result, (keyvec[keyvec_indices[x.src]],keyvec[keyvec_indices[x.dst]]))
+        end
+        return result
+    end ## if n
+end
+
+## as above, but using a simple small-world network
+function connect_small_world(keyvec::Vector{T}, K::Int, min_N::Int, B::Float64) where T<:Any
+    keyvec = unique(keyvec) ## e.g., duplicates happen if someone lives and works at the same gq
+    n = length(keyvec) ## size of group
+    if n < 2 ## nothing to connect
+        return Tuple{T,T}[]
+    elseif n < min_N ## more than one but less than thresh = fully connected
+        g = complete_graph(n)
+    else
+        g = watts_strogatz(n, K, B) ## small-world network
+    end
+    ## indices in g correspond to positions in keyvec
+    return [(keyvec[x.src],keyvec[x.dst]) for x in edges(g)]
+end
+
 ## sparse adjacency matrix of bits should be an efficient way to store the network
 ## (also, simple to convert to Graphs.jl graph for analysis)
 ## (also, has good lookup performance, same as hash table)
 function generate_sparse()
-    ## people grouped by workplace, school, group quarters
-    ##  (currently, we don't care what kind of group it is)
-    ppl_in_groups = read_groups()
+    dConfig = tryJSON("config.json")
+    inc_seg_wp = Bool(get(dConfig, "income_segregated_workplaces", 1))
+    work_K::Int = get(dConfig, "workplace_K", 8) ## mean degree for wp networks
+    school_K::Int = get(dConfig, "school_K", 12) ## mean degree for school networks
+    other_K::Int = get(dConfig, "netw_K", 8) ## mean degree for other networks
+    other_B::Float64 = get(dConfig, "netw_B", 0.25) ## beta param for small world networks
+    work_assoc_coeff::Float64 = get(dConfig, "income_associativity_coefficient", 0.9) ## group associativity for workplace networks
+    sch_assoc_coeff::Float64 = get(dConfig, "school_associativity_coefficient", 0.9) ## group associativity for school networks
+
+    ## from workplaces.jl; workers grouped into companies
+    ## worker is (person id, hh id, cbg id, income category) -- last one only if income seg wp's were generated
+    company_workers = collect(values(dser_path("jlse/company_workers.jlse")))
+    #school students and teachers
+    ## student/teacher is (person id, hh id, cbg id, grade) -- first 3 are a person key
+    ppl_in_schools = collect(values(read_sch_ppl()))
+    ## gq residents and employees 
+    ppl_in_gq = collect(values(read_gq_ppl()))
+
     ## each person needs an integer index
     p_idxs, dummy_idxs = person_indices()
     ## save dummies to file; these ppl have workplace but no household; sim should infect them randomly at home
@@ -103,28 +205,34 @@ function generate_sparse()
     ## generate network
     src_idxs = Int64[]
     dst_idxs = Int64[]
-    
-    ## small-world netw params: k = 8, B = 0.25 seems ok
-    dConfig = tryJSON("config.json")
-    K = get(dConfig, "netw_K", 8)
-    B = get(dConfig, "netw_B", 0.25)
-    ## if less than k+2, assume fully connected
-    min_N = K + 2
 
-    for keyvec in ppl_in_groups
-        keyvec = unique(keyvec) ## e.g., if someone lives and works at the same gq
-        n = length(keyvec) ## size of group
-        if n > 1 ## otherwise, nothing to do
-            if n < min_N ## more than one but less than thresh = fully connected
-                g = complete_graph(n)
-            else
-                g = watts_strogatz(n, K, B) ## small-world network
-            end
-            ## convert indices in g to global person indices for each edge
-            for x in edges(g)
-                push!(src_idxs, p_idxs[keyvec[x.src]])
-                push!(dst_idxs, p_idxs[keyvec[x.dst]])
-            end
+    ## workplaces: using stochastic block model (SBM) network
+    ## so that all results are comparable, use the SBM algo even if there's only one income group in a wp
+    for keyvec in company_workers 
+        ## connect worker keys into network, then convert to integer indices
+        for (s_key, d_key) in connect_SBM(keyvec, work_K, work_K+2, work_assoc_coeff, inc_seg_wp)
+            ## key elements 1-3 correspond to a person key
+            push!(src_idxs, p_idxs[s_key[1:3]])
+            push!(dst_idxs, p_idxs[d_key[1:3]])
+        end
+    end
+
+    ## schools: using SBM, grouped by grade
+    for keyvec in ppl_in_schools 
+        ## connect student and teacher keys into network, then convert to integer indices
+        for (s_key, d_key) in connect_SBM(keyvec, school_K, school_K+2, sch_assoc_coeff, true)
+            ## key elements 1-3 correspond to a person key
+            push!(src_idxs, p_idxs[s_key[1:3]])
+            push!(dst_idxs, p_idxs[d_key[1:3]])
+        end
+    end
+
+    ## other institutions (currently just gq's) : using small-world network
+    for keyvec in ppl_in_gq
+        for (s_key, d_key) in connect_small_world(keyvec, other_K, other_K+2, other_B)
+            ## key elements 1-3 correspond to a person key
+            push!(src_idxs, p_idxs[s_key[1:3]])
+            push!(dst_idxs, p_idxs[d_key[1:3]])
         end    
     end
 
@@ -146,9 +254,10 @@ function generate_sparse()
 
     ## keep track of people working outside synth area (have no workplace network, sim should infect them randomly at work)
     outside_workers = dser_path("jlse/outside_workers.jlse")
-    ser_path("jlse/adj_out_workers.jlse", Dict(p_idxs[only(x)] => only(x) for x in values(outside_workers)))
+    ser_path("jlse/adj_out_workers.jlse", Dict(p_idxs[only(x)[1:3]] => only(x)[1:3] for x in values(outside_workers)))
     
    return nothing
+   
 end
 
 function rev_mat_keys()
@@ -191,9 +300,26 @@ end
 
 
 
+
+
 ##
 ## fns below not used, keep for testing purposes
 ##
+
+## returns a list of all groups of people in "institutions" 
+##   (excluding households, treating those separately)
+function read_groups()
+    ## gq residents and employees
+    gq_ppl = read_gq_ppl()
+    ## school students and teachers
+    sch_ppl = read_sch_ppl()
+    ## from workplaces.jl:
+    company_workers = dser_path("jlse/company_workers.jlse")
+
+    return [collect(values(gq_ppl)); 
+            collect(values(sch_ppl));
+            collect(values(company_workers))]
+end
 
 ## generate network as adjacency list (vector of neighbors for each node)
 function generate_network()

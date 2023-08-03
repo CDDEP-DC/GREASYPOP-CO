@@ -61,8 +61,8 @@ function read_workers_by_cbg(origin_codes)
             if haskey(cbg_dict,c) ## some cbgs don't have households
                 hhvec = cbg_dict[c] ## household id's in this cbg
                 hh_workers = Vector{Int64}()
-                for x in hhvec ## add number of workers from each household
-                    n_work = hh_samps[hh_idx[x],:has_job]
+                for x in hhvec ## add number of workers from each household (only commuters count)
+                    n_work = hh_samps[hh_idx[x],:commuter]
                     if !ismissing(n_work) 
                         push!(hh_workers, n_work)
                     end
@@ -74,28 +74,58 @@ function read_workers_by_cbg(origin_codes)
     return workers_by_cbg
 end
 
+## origin codes are a tuple of (cbg, income code)
+function read_workers_cbg_x_inc(origin_codes)
+    ## household sample summaries has # of workers for every sample household
+    hh_samps = read_df("processed/hh_samples.csv"; types=Dict("SERIALNO"=>String15))
+    hh_idx = Dict(hh_samps.SERIALNO .=> eachindex(hh_samps.SERIALNO))
+    codes = Dict("inc_low"=>:com_LODES_low, "inc_high"=>:com_LODES_high) ## column corresponding to each income code
+    workers_cbg_x_inc = Dict{Tuple{String15,String15},Int64}()
+    counties = unique(map(x->x[1][1:5], origin_codes))
+    for co in counties
+        ## read households generated for cbgs in county
+        cbg_dict = dser_path("jlse/CO/hh"*co*".jlse")
+
+        ## for each cbg in county, look up # workers in hh sample summaries
+        for (c,i_code) in filter(k->k[1][1:5]==co, origin_codes)
+            if haskey(cbg_dict,c) ## some cbgs don't have households
+                hhvec = cbg_dict[c] ## household id's in this cbg
+                hh_workers = Vector{Int64}()
+                for x in hhvec ## add number of workers from each household (only commuters count)
+                    n = hh_samps[hh_idx[x],codes[i_code]]
+                    push!(hh_workers, coalesce(n, 0))
+                end
+                workers_cbg_x_inc[(c,i_code)] = sum(hh_workers)
+            end
+        end
+    end
+    return workers_cbg_x_inc
+end
+
 ## workers living in group quarters, calculated in households.jl
 function read_gq_workers()
     gq_df = dser_path("jlse/df_gq_summary.jlse")
     gq_workers_by_cbg = Dict{String15,Int64}()
     for r in eachrow(gq_df)
-        if r.working > 0
-            gq_workers_by_cbg[String15(r.geo)] = r.working
+        if r.commuter > 0
+            gq_workers_by_cbg[String15(r.geo)] = r.commuter
         end
     end
     return gq_workers_by_cbg
 end
 
-## allocate workers to destinations for each cbg, based on commute matrix
-function allocate_workers(od_matrix::Matrix{Float64}, od_idx::Dict{String15, Int64}, workers_by_cbg::Dict{String15, Int64})
-    od_counts = zeros(Int64, size(od_matrix))
-    for (code, rownum) in od_idx 
-        ## note, od matrix contains cbgs that we didn't create; e.g, not enough households
-        if haskey(workers_by_cbg, code)
-            od_counts[rownum,:] = lrRound(od_matrix[rownum,:] .* workers_by_cbg[code])
-        end    
+function read_gq_workers_by_inc()
+    gq_df = dser_path("jlse/df_gq_summary.jlse")
+    gq_w_cbg_x_inc = Dict{Tuple{String15,String15},Int64}()
+    codes = Dict("inc_low"=>:com_LODES_low, "inc_high"=>:com_LODES_high) ## column corresponding to each income code
+    for r in eachrow(gq_df)
+        for (i_code, col_name) in codes
+            if r[col_name] > 0
+                gq_w_cbg_x_inc[(r.geo,i_code)] = r[col_name]
+            end
+        end
     end
-    return od_counts
+    return gq_w_cbg_x_inc
 end
 
 ## OD data for workers commuting from outside the synth area
@@ -114,6 +144,25 @@ function read_outside_origins()
     return Dict(df_by_dest.w_cbg .=> df_by_dest.n)
 end
 
+## in OD data, using SE01 + SE02 for low income, SE03 for high income
+function read_outside_by_inc()
+    df_live_outside = read_df("processed/work_locs_live_outside.csv"; 
+            select=[:w_cbg,:SE01,:SE02,:SE03,:h_state], 
+            types=Dict([:w_cbg,:SE01,:SE02,:SE03,:h_state] .=> [String15,Int64,Int64,Int64,String3]))
+    ## only count people living in neighboring states (assume others work remotely)
+    dConfig = tryJSON("config.json")
+    v = get(dConfig, "commute_states", nothing)
+    if !isnothing(v)
+        neigh_states = Set(String.(v))
+        df_live_outside = filter(r->in(r.h_state,neigh_states), df_live_outside)
+    end
+    df_by_dest = combine(groupby(df_live_outside, :w_cbg), :SE01 => sum, :SE02 => sum, :SE03 => sum)
+    df_by_dest[!,:inc_low] = df_by_dest[!,:SE01_sum] .+ df_by_dest[!,:SE02_sum]
+    df_by_dest[!,:inc_high] = df_by_dest[!,:SE03_sum]
+    df_by_dest = stack(df_by_dest[!,[:w_cbg,:inc_low,:inc_high]], 2:3)
+    return Dict(zip(df_by_dest.w_cbg, String15.(df_by_dest[:,2])) .=> df_by_dest.value)
+end
+
 ## number of teachers by school
 function read_sch_teachers()
     sch_cols = Dict("NCESSCH"=>String15,"TEACHERS"=>Int64,"STUDENTS"=>Int64)
@@ -128,14 +177,14 @@ end
 
 ## pulls teachers from likely work destinations based on numbers in sch_n_teachers
 ## modifies count_matrix in-place
-## return dict of school id => employee cbgs
-function pull_teachers!(count_matrix::Matrix{Int64}, dest_idx::Dict{String, Int64}, origin_labels::Vector{String15})
+## return dict of school id => employee origins
+function pull_teachers!(count_matrix::Matrix{Int64}, dest_idx::Dict{String, Int64}, origin_labels::Vector{K}) where K<:Any
     ## find the closest cbg for each school
     distmat = read_df("processed/cbg_sch_distmat.csv"; types=Dict("GEOID"=>String15))
     closest_cbg = Dict(x => string(distmat[argmin(distmat[!,x]),"GEOID"]) for x in names(distmat))
 
     sch_n_teachers = read_sch_teachers()
-    sch_emp_origins = Dict{String15,Vector{String15}}()
+    sch_emp_origins = Dict{String15,Vector{K}}()
     ## for each school, pull n teachers who have a suitable work _destination_
     for (school_id, n) in sch_n_teachers
         cbg = closest_cbg[school_id]
@@ -156,23 +205,23 @@ end
 ## pulls gq employees from likely work destinations based on numbers in gq_n_emps
 ##  (this is people working at group quarters)
 ## modifies count_matrix in-place
-## return dict of gq id => employee cbgs
-function pull_gq_workers!(count_matrix::Matrix{Int64}, dest_idx::Dict{String, Int64}, origin_labels::Vector{String15})
+## return dict of gq id => employee origins
+function pull_gq_workers!(count_matrix::Matrix{Int64}, dest_idx::Dict{String, Int64}, origin_labels::Vector{K}) where K<:Any
     ## find cbg where each gq is located
     gqs = dser_path("jlse/gqs.jlse")
     cbgs = dser_path("jlse/cbg_idxs.jlse")
     gq_cbgs = Dict(k => cbgs[k[2]] for k in keys(gqs))
     ## inst qg's: assume 1 workers per 10 residents; non-inst, 1 per 50? mininum 2?
     dConfig = tryJSON("config.json")
-    r_i = get(dConfig, "inst_res_per_worker", 10)
-    r_ni = get(dConfig, "noninst_res_per_worker", 50)
-    e_min = get(dConfig, "min_gq_workers", 2)
+    r_i::Float64 = float(get(dConfig, "inst_res_per_worker", 10))
+    r_ni::Float64 = float(get(dConfig, "noninst_res_per_worker", 50))
+    e_min::Int = get(dConfig, "min_gq_workers", 2)
     
     gq_n_emps = Dict(k => 
         max(e_min, ceil(Int64, v.type == :noninst1864 ? length(v.residents)/r_ni : length(v.residents)/r_i)) 
         for (k,v) in gqs)
     
-    gq_emp_origins = Dict{GQkey,Vector{String15}}()
+    gq_emp_origins = Dict{GQkey,Vector{K}}()
     ## for each gq, pull n workers who have a suitable work _destination_
     for (gq_id, n) in gq_n_emps
         cbg = gq_cbgs[gq_id]
@@ -190,6 +239,18 @@ function pull_gq_workers!(count_matrix::Matrix{Int64}, dest_idx::Dict{String, In
     return gq_emp_origins    
 end
 
+## allocate workers to destinations for each cbg, based on commute matrix
+function allocate_workers(od_matrix::Matrix{Float64}, od_idx::Dict{K, Int64}, workers_by_cbg::Dict{K, Int64}) where K<:Any
+    od_counts = zeros(Int64, size(od_matrix))
+    for (code, rownum) in od_idx 
+        ## note, od matrix contains cbgs that we didn't create; e.g, not enough households
+        if haskey(workers_by_cbg, code)
+            od_counts[rownum,:] = lrRound(od_matrix[rownum,:] .* workers_by_cbg[code])
+        end    
+    end
+    return od_counts
+end
+
 ## employer size stats by county
 function read_county_stats()
     cols = Dict("county"=>String7,"mu_ln"=>Float64,"sigma_ln"=>Float64)
@@ -200,9 +261,29 @@ end
 ## group by destination, split into workplaces, assign origins
 ## modifies count_matrix in place
 ## returns a dict of workplace ids => employee cbgs
-function generate_workplaces!(count_matrix::Matrix{Int64}, dest_idx::Dict{String, Int64}, origin_labels::Vector{String15}, county_stats::Dict{String7, Tuple{Float64, Float64}})
-    work_origins = Dict{WRKkey, Vector{String15}}()
+function generate_workplaces!(count_matrix::Matrix{Int64}, dest_idx::Dict{String, Int64}, 
+    origin_labels::Vector{K}, county_stats::Dict{String7, Tuple{Float64, Float64}}, inc_seg::Bool=true) where K<:Any
 
+    if inc_seg ## generate income-segregated workplaces
+        dConfig = tryJSON("config.json")
+        p_mixed_workers::Float64 = get(dConfig, "p_workers_in_mixed_workplaces", 0.5) ## places a certain p workers into mixed workplaces
+        wp_types = UInt8[0,1,2]
+        ## create 3 separate OD matrices
+        counts_mixed = round.(Int, count_matrix .* p_mixed_workers)
+        idxs_low = findall(x->x[2]=="inc_low", origin_labels)
+        idxs_high = findall(x->x[2]=="inc_high", origin_labels)
+        remaining = count_matrix .- counts_mixed
+        counts_low = zeros(Int, size(remaining))
+        counts_low[idxs_low,:] .= remaining[idxs_low,:]
+        counts_high = zeros(Int, size(remaining))
+        counts_high[idxs_high,:] .= remaining[idxs_high,:]
+        matrices = [counts_mixed, counts_low, counts_high]
+    else
+        wp_types = UInt8[0]
+        matrices = [count_matrix]
+    end
+
+    work_origins = Dict{WRKkey, Vector{K}}()
     counties = unique(map(x->x[1:5], collect(keys(dest_idx))))
     for co in counties
         ## throw out unused draws between counties
@@ -211,14 +292,16 @@ function generate_workplaces!(count_matrix::Matrix{Int64}, dest_idx::Dict{String
         ## work destinations in the county we just read the stats for
         dests = filterk(k->k[1:5]==co, dest_idx)
         for (dest_code, col) in dests
-            n = sum(count_matrix[:,col]) ## number of workers in the dest
-            if n > 0
-                sizes = split_lognormal!(n,mu,sigma,draws)
-                for (work_i, emp_size) in enumerate(sizes)
-                    ## get rand sample of origins; pass a view so original matrix is modified
-                    o_idxs = drawCounts!(view(count_matrix,:,col), emp_size)
-                    ## create workplace and assign origins sampled
-                    work_origins[(work_i, dest_code)] = origin_labels[o_idxs]
+            for (typecode, M) in zip(wp_types, matrices)
+                n = sum(M[:,col]) ## number of workers in the dest
+                if n > 0
+                    sizes = split_lognormal!(n,mu,sigma,draws)
+                    for (work_i, emp_size) in enumerate(sizes)
+                        ## get rand sample of origins; pass a view so original matrix is modified
+                        o_idxs = drawCounts!(view(M,:,col), emp_size)
+                        ## create workplace and assign origins sampled
+                        work_origins[(work_i, typecode, dest_code)] = origin_labels[o_idxs]
+                    end
                 end
             end
         end
@@ -227,46 +310,113 @@ function generate_workplaces!(count_matrix::Matrix{Int64}, dest_idx::Dict{String
     return work_origins
 end
 
+## make a separate work destination for each person working outside the synth area
+##  (no need to try to group them, as they have no work network anyway)
+function generate_outside_workplaces(work_outside::Dict{K,Int}) where K<:Any
+    return Dict([WRKkey((i, 0, "outside")) for i in 1:sum(values(work_outside))]  
+        .=> map(x->Vector{K}([x]), reduce(vcat, [fill(k, v) for (k, v) in work_outside])))
+end
+
 ## people generated in households.jl
 function read_workers()
     people = dser_path("jlse/people.jlse")
-    ## just working people
-    return filterv(x->x.working, people)    
+    ## just commuters
+    return collect(keys(filterv(x->x.commuter, people)))
 end
 
-## assigns people in workers_by_cbg to employers in emp_origins
-## modifies cidx_by_cbg so that it can be called with several emp_origins on the same pop
-## returns a dict of employer id => vector of person ids, and some diagnostics
-function assign_workers!(emp_origins::Dict{T,Vector{String15}}, 
-    workers_by_cbg::Dict{String15, Vector{Pkey}}, 
-    cidx_by_cbg::Dict{String15, Int64}) where T
+function read_workers_by_inc()
+    people = dser_path("jlse/people.jlse")
+    ## return a tuple for each person: (person id, hh id, cbg id, commuter income cat)
+    ## first 3 come from the person key; for income cat use 1 = low, 2 = high
+    ## filter out non-commuters
+    return filter(x->x[4]>0, [(k..., UInt8(1*v.com_LODES_low + 2*v.com_LODES_high)) for (k,v) in people])
+end
 
-    n_by_cbg = Dict(k => lastindex(v) for (k,v) in workers_by_cbg)
-    workers = Dict{T, Vector{Pkey}}()
-    for est_id in keys(emp_origins)
-        workers[est_id] = Vector{Pkey}()
+function group_workers_by_cbg(workers::Vector{W}, origin_labels::Vector{K}) where {W,K}
+    ## group by cbg, randomize order
+    cbgs = dser_path("jlse/cbg_idxs.jlse")
+    ##  (dataframe has fast grouping)
+    df_by_origin = groupby(DataFrame(workers),"3")
+    workers_by_origin = Dict{K, Vector{W}}()
+    for gk in keys(df_by_origin)
+        cbg_geo = cbgs[gk["3"]]
+        workers_by_origin[cbg_geo] = shuffle( [Tuple(r) for r in eachrow(df_by_origin[gk])] )
     end
-    
-    dummies = 0
+    return workers_by_origin
+end
+
+function group_workers_by_cbg_x_inc(workers::Vector{W}, origin_labels::Vector{K}) where {W,K}
+    ## group by cbg and income, randomize order
+    cbgs = dser_path("jlse/cbg_idxs.jlse")
+    ##  (dataframe has fast grouping)
+    df_by_origin = groupby(DataFrame(workers),["3","4"])
+    inc_codes = Dict(UInt8(1)=>"inc_low", UInt8(2)=>"inc_high")
+    workers_by_origin = Dict{K, Vector{W}}()
+    for gk in keys(df_by_origin)
+        cbg_geo, i_code = cbgs[gk["3"]], inc_codes[gk["4"]]
+        workers_by_origin[(cbg_geo,i_code)] = shuffle( [Tuple(r) for r in eachrow(df_by_origin[gk])] )
+    end
+    return workers_by_origin
+end
+
+function dummy_gen_fn(by_inc::Bool=false)
+    dummy_idx = 0
+    inc_codes = Dict("inc_low"=>UInt8(1), "inc_high"=>UInt8(2))
+    if by_inc
+        f = function(origin::Tuple{String15,String15})
+            dummy_idx += 1
+            ## diagnostics (dummy should only be created when origin is "outside")
+            d_err = origin[1] == "outside" ? 0 : 1
+            ## dummies have no household or home cbg
+            ## we have dummies' income from the commute data; include this in the key
+            return (dummy_idx,0,0,get(inc_codes,origin[2],UInt8(0))), d_err
+        end
+    else
+        f = function(origin::String15)
+            dummy_idx += 1
+            ## diagnostics (dummy should only be created when origin is "outside")
+            d_err = origin == "outside" ? 0 : 1
+            ## dummies have no household or home cbg
+            return (dummy_idx,0,0), d_err
+        end
+    end
+    return f
+end
+
+## assigns people in workers_by_origin to employers in emp_origins
+## modifies cidx_by_origin so that it can be called with several emp_origins on the same pop
+## creates "dummies" -- workers from outside that don't exist in people data
+## returns a dict of employer id => vector of worker ids, and some diagnostics
+function assign_workers!(emp_origins::Dict{T,Vector{K}}, workers_by_origin::Dict{K, Vector{W}}, 
+    cidx_by_origin::Dict{K, Int64}, dummy_fn::F) where {T<:Any,K<:Any,W<:Any,F<:Function}
+
+    n_by_origin = Dict(k => length(v) for (k,v) in workers_by_origin)
+    ## initialize empty lists
+    workers = Dict{T, Vector{W}}()
+    for est_id in keys(emp_origins)
+        workers[est_id] = Vector{W}()
+    end
+    dummies = Vector{W}() ## keep track of dummies created
+
     missing_origin = 0
-    ran_out = Dict{String15,Int64}()
-    for (e_id, origins) in emp_origins
-        for h_cbg in origins
-            if h_cbg == "outside"
-                dummies += 1
-                i = cidx_by_cbg["outside"] += 1
-                push!(workers[e_id], (i,0,0)) ## dummies have no household or home cbg
-            else
-                if haskey(cidx_by_cbg, h_cbg)
-                    i = cidx_by_cbg[h_cbg] += 1 ## this doesn't look like it should be allowed, but it is lol
-                    if i > n_by_cbg[h_cbg]
-                        ran_out[h_cbg] = get!(ran_out, h_cbg, 0) + 1 ## this shouldn't happen
-                    else
-                        push!(workers[e_id], (workers_by_cbg[h_cbg][i]))
-                    end
+    ran_out = Dict{K,Int64}()
+    for (e_id, origin_vec) in emp_origins
+        for origin_key in origin_vec
+            ## if the origin is not in cidx, it's outside the synth area and a dummy must be created
+            if haskey(cidx_by_origin, origin_key)
+                i = cidx_by_origin[origin_key] += 1 ## this doesn't look like it should be allowed, but it is lol
+                if i > n_by_origin[origin_key]
+                    ran_out[origin_key] = get!(ran_out, origin_key, 0) + 1 ## this shouldn't happen
                 else
-                    missing_origin += 1
+                    push!(workers[e_id], (workers_by_origin[origin_key][i]))
                 end
+            else
+                ## create dummy
+                dum::W, d_err::Int = dummy_fn(origin_key)
+                push!(dummies, dum)
+                push!(workers[e_id], dum)
+                ## diagnostics (all origins except "outside" should have been in cidx)
+                missing_origin += d_err
             end
         end
     end
@@ -274,27 +424,34 @@ function assign_workers!(emp_origins::Dict{T,Vector{String15}},
 end
 
 
+
 function generate_jobs_and_workers()
+    dConfig = tryJSON("config.json")
+    inc_seg = Bool(get(dConfig, "income_segregated_workplaces", 1))
+
     ## read commute matrix
-    od_matrix = read_df("processed/work_od_matrix.csv"; types=Dict("h_cbg"=>String15))
-    origin_labels = od_matrix.h_cbg ## save row labels
-    origin_idx = Dict(od_matrix.h_cbg .=> eachindex(od_matrix.h_cbg)) ## for easy lookup
-    dest_labels = names(od_matrix)[2:end-1] ## save column headings, except last one which is "outside"
+    filename = inc_seg ? "processed/work_od_matrix.csv" : "processed/work_od_matrix_no_inc.csv"
+    od_matrix = read_df(filename; types=Dict("h_cbg"=>String15))
+    if inc_seg
+        od_start_col = 3
+        origin_labels = collect(zip(od_matrix.h_cbg,Vector{String15}(od_matrix[:,2]))) ## row labels are a tuple of the first two columns (cbg, income_label)
+    else
+        od_start_col = 2
+        origin_labels = od_matrix.h_cbg ## row labels are cbgs
+    end
+    od_idx = Dict(origin_labels .=> axes(od_matrix,1)) ## for easy lookup
+    dest_labels = names(od_matrix)[od_start_col:end-1] ## save column headings, except last one which is "outside"
     dest_idx = Dict(dest_labels .=> eachindex(dest_labels)) ## for easy lookup
-    ## convert to matrix for easier math
-    od_matrix = Matrix{Float64}(od_matrix[!,2:end])
-
-    ## read # workers from hh sample summary
-    hh_workers_by_cbg = read_workers_by_cbg(origin_labels)
-
-    ## add workers living in gq's
-    gq_workers_by_cbg = read_gq_workers()
-    tt_workers_by_cbg = mergewith(+,hh_workers_by_cbg,gq_workers_by_cbg)
-    println("# workers living in synth area = ", sum(values(tt_workers_by_cbg)))
+    
+    ## read # workers from hh sample summary, add workers living in gq's
+    fn_read_wrk = inc_seg ? read_workers_cbg_x_inc : read_workers_by_cbg
+    fn_read_gq = inc_seg ? read_gq_workers_by_inc : read_gq_workers
+    total_w_by_origin = mergewith(+, fn_read_wrk(origin_labels), fn_read_gq())
+    println("# workers living in synth area = ", sum(values(total_w_by_origin)))
 
     ## multiply workers by od matrix
     ## (no need to worry about "secret jobs", which are only missing from the OD raw data)
-    od_counts = allocate_workers(od_matrix, origin_idx, tt_workers_by_cbg)
+    od_counts = allocate_workers(Matrix{Float64}(od_matrix[!,od_start_col:end]), od_idx, total_w_by_origin)
     println("# allocated to destinations = ", sum(od_counts))
 
     ## pull off the last column (destination outside the synth area)
@@ -303,14 +460,25 @@ function generate_jobs_and_workers()
     od_counts = od_counts[:,1:end-1]
 
     ## read workers living outside synth area
-    live_outside = read_outside_origins()
-    ## append to bottom of od_counts
-    od_counts = vcat(od_counts, transpose([get(live_outside, k, 0) for k in dest_labels]))
-    push!(origin_labels, "outside") ## add label for bottom row
+    ## append to bottom of od_counts, following same order as existing matrix
+    last_inside_idx = lastindex(origin_labels) ## save idx before modifying
+    if inc_seg
+        live_outside = read_outside_by_inc()
+        od_counts = vcat(od_counts, 
+                transpose([get(live_outside, (k,"inc_low"), 0) for k in dest_labels]), 
+                transpose([get(live_outside, (k,"inc_high"), 0) for k in dest_labels]))
+        push!(origin_labels, ("outside","inc_low"), ("outside","inc_high")) ## add labels for bottom rows
+    else
+        live_outside = read_outside_origins()
+        od_counts = vcat(od_counts, transpose([get(live_outside, k, 0) for k in dest_labels]))
+        push!(origin_labels, "outside") ## add label for bottom row   
+    end
     println("# jobs within synth area = ", sum(od_counts))
 
     ## pull out workers for schools and gqs for each destination (except "outside")
     ##   (assumes workers from out of state can work in public schools)
+    ##   samples worker origins in proportion to counts, without special consideration for income
+    ##   (at schools and gqs, high/low income workers are mixed together in the same proportion as the destination's overall workforce) 
     sch_emp_origins = pull_teachers!(od_counts, dest_idx, origin_labels)
     gq_emp_origins = pull_gq_workers!(od_counts, dest_idx, origin_labels)
 
@@ -326,18 +494,16 @@ function generate_jobs_and_workers()
         stats2[k] = (v[1], v[2]+0.1)
     end
 
-    work_origins = generate_workplaces!(od_counts, dest_idx, origin_labels, stats2)
+    work_origins = generate_workplaces!(od_counts, dest_idx, origin_labels, stats2, inc_seg)
 
     ## by cbg, # people working outside the synth area
     ## could create a separate dummy workplace for each person?
     ##  (no reason to group them; they will get infected at work randomly, not through the network)
-    work_outside = Dict(origin_labels[1:end-1] .=> work_outside_counts)
-
-    ## group people by cbg, shuffle, and assign to origins
-    cbgs = dser_path("jlse/cbg_idxs.jlse")
+    work_outside = Dict(origin_labels[1:last_inside_idx] .=> work_outside_counts)
 
     ## read synthetic people generated in households.jl
-    workers = read_workers()
+    ## workers have income code appended to person key; will make it easier to build assortative network
+    workers = inc_seg ? read_workers_by_inc() : read_workers()
 
     ## check totals
     println("# ppl working within synth area = ", length(workers) - sum(work_outside_counts) + sum(values(live_outside)))
@@ -345,27 +511,20 @@ function generate_jobs_and_workers()
         sum(length.(values(sch_emp_origins))) + 
         sum(length.(values(gq_emp_origins))))) ## jobs inside synth area
 
-    ## group by cbg, randomize order
-    ##  (dataframe has fast grouping)
-    df_by_cbg = groupby(DataFrame(keys(workers)),"3")
-    workers_by_cbg = Dict{String15, Vector{Pkey}}()
-    for gk in keys(df_by_cbg)
-        cbg_idx = gk["3"]
-        cbg_geo = cbgs[cbg_idx]
-        workers_by_cbg[cbg_geo] = shuffle(Tuple.(eachrow(df_by_cbg[gk])))
-    end
+    ## group people by origin, shuffle, and assign to origins
+    fn_grp_wrk = inc_seg ? group_workers_by_cbg_x_inc : group_workers_by_cbg
+    workers_by_origin = fn_grp_wrk(workers, origin_labels)
 
     ## instead of removing workers as they're assigned, just keep pointers to the first available worker
-    cidx_by_cbg = Dict(keys(workers_by_cbg) .=> 0)
-    ## allow sequential numbering of workers living outside the synth area
-    cidx_by_cbg[String15("outside")] = 0
+    cidx_by_origin = Dict(keys(workers_by_origin) .=> 0)
+    dummy_fn = dummy_gen_fn(inc_seg)
 
     ## assign workers from synth pop to employer origins
-    (sch_workers, dummies, missing_origins, ran_out) = assign_workers!(sch_emp_origins, workers_by_cbg, cidx_by_cbg);
+    (sch_workers, sch_dummies, missing_origins, ran_out) = assign_workers!(sch_emp_origins, workers_by_origin, cidx_by_origin, dummy_fn);
     println("# workers assigned to schools = ",sum(length.(values(sch_workers))))
-    (gq_workers, dummies, missing_origins, ran_out) = assign_workers!(gq_emp_origins, workers_by_cbg, cidx_by_cbg);
+    (gq_workers, gq_dummies, missing_origins, ran_out) = assign_workers!(gq_emp_origins, workers_by_origin, cidx_by_origin, dummy_fn);
     println("# workers assigned to group quarters = ",sum(length.(values(gq_workers))))
-    (company_workers, dummies, missing_origins, ran_out) = assign_workers!(work_origins, workers_by_cbg, cidx_by_cbg);
+    (company_workers, company_dummies, missing_origins, ran_out) = assign_workers!(work_origins, workers_by_origin, cidx_by_origin, dummy_fn);
     println("# workers assigned to 'companies' = ",sum(length.(values(company_workers))))
     ## check results
     println("total workers assigned = " ,(sum(length.(values(company_workers))) + 
@@ -377,25 +536,21 @@ function generate_jobs_and_workers()
     ## you weren't going to forget, were you?
     ## TODO (maybe) push ~50k work-from-home ppl to the end so they get assigned outside
     ##   (otherwise could be too many wfh in the in-area workplaces)
-    n_by_cbg = Dict(k => length(v) for (k,v) in workers_by_cbg)
-    unused = Dict(k => max(0,(v - cidx_by_cbg[k])) for (k,v) in n_by_cbg)
+    n_by_origin = Dict(k => length(v) for (k,v) in workers_by_origin)
+    unused = Dict(k => max(0,(v - cidx_by_origin[k])) for (k,v) in n_by_origin)
     println("# remaining workers = ", sum(values(unused)))
 
-    ## make a separate work destination for each person working outside the synth area
-    ##  (probably no need to try to group them, as they have no work network anyway)
-    (outside_workers, dummies, missing_origins, ran_out) = assign_workers!(
-        Dict([WRKkey((i, "outside")) for i in 1:sum(values(work_outside))]  
-                .=> map(x->Vector{String15}([x]), reduce(vcat, [fill(k, v) for (k, v) in work_outside]))),
-        workers_by_cbg, cidx_by_cbg)
-
+    (outside_workers, _, missing_origins, ran_out) = assign_workers!(generate_outside_workplaces(work_outside), workers_by_origin, cidx_by_origin, dummy_fn);
     ## check results
     println("# jobs created outside synth area = ", sum(length.(values(outside_workers))))
 
     ## save to file for next step
-    ser_path("jlse/sch_workers.jlse",sch_workers)
-    ser_path("jlse/gq_workers.jlse",gq_workers)
-    ser_path("jlse/company_workers.jlse",company_workers)
-    ser_path("jlse/outside_workers.jlse",outside_workers)
+    suffix = "" # inc_seg ? "" : "_no_inc"
+    ser_path("jlse/work_dummies"*suffix*".jlse",[sch_dummies; gq_dummies; company_dummies])
+    ser_path("jlse/sch_workers"*suffix*".jlse",sch_workers)
+    ser_path("jlse/gq_workers"*suffix*".jlse",gq_workers)
+    ser_path("jlse/company_workers"*suffix*".jlse",company_workers)
+    ser_path("jlse/outside_workers"*suffix*".jlse",outside_workers)
 
     # performance testing
     println("generated establishment sizes (other than schools and group quarters):")

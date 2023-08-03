@@ -60,6 +60,11 @@
 	"commute_states": [
 		"24", "11", "51", "10", "42", "54"
 	],
+	"LODES_annual_income_boundary": 40000,
+    "income_segregated_workplaces": 1,
+    "p_workers_in_mixed_workplaces": 0.5,
+    "income_associativity_coefficient": 0.9,
+    "school_associativity_coefficient": 0.9,
     "inst_res_per_worker": 10,
 	"noninst_res_per_worker": 50,
 	"min_gq_workers": 2,
@@ -69,6 +74,8 @@
     "CO_crit_val": 10.0,
     "CO_cooldown": 0.99,
     "CO_maxgens": 200000,
+    "workplace_K": 8,
+    "school_K": 12,
     "netw_K": 8,
     "netw_B": 0.25
 }

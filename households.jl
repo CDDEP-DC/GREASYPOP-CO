@@ -29,7 +29,7 @@ end
 
 ## read person samples into a dataframe
 function read_psamp_df()
-    p_samp_sel = ["SERIALNO","AGEP","SEX","commuter","has_job","job_listed","sch_grade"]
+    p_samp_sel = ["SERIALNO","AGEP","SEX","commuter","has_job","com_LODES_low","com_LODES_high","sch_grade"]
     return read_df("processed/p_samples.csv"; select=p_samp_sel, types=Dict("SERIALNO"=>String15))
 end
 
@@ -54,7 +54,7 @@ function row_gq_pops(r::DataFrameRow)
     inst65o = int(r["group quarters:65 and over"] * r["p_65o_inst"])
 
     dConfig = tryJSON("config.json")
-    r_m = get(dConfig, "min_gq_residents", 20)
+    r_m::Int = get(dConfig, "min_gq_residents", 20)
 
     return [instu18 >= r_m ? instu18 : 0, 
         inst1864 >= r_m ? inst1864 : 0, 
@@ -65,29 +65,41 @@ end
 ## assume only 18-64 noninst have jobs
 function row_gq_employment(n::Int64, havejobs::Bool, r::DataFrameRow)
     if havejobs
-        n_com_list = int(n * r["p_com_list|noninst1864"])
-        n_com_ulist = int(n * r["p_com_ulist|noninst1864"])
-        n_wfh_list = int(n * r["p_wfh_list|noninst1864"])
-        n_wfh_ulist = int(n * r["p_wfh_ulist|noninst1864"])
-        n_not_working = int(n) - (n_com_list + n_com_ulist + n_wfh_list + n_wfh_ulist)
-        return (n_com_list, n_com_ulist, n_wfh_list, n_wfh_ulist, n_not_working)
+        #n_com_list = int(n * r["p_com_list|noninst1864"])
+        #n_com_ulist = int(n * r["p_com_ulist|noninst1864"])
+        n_com_low = int(n * r["p_com_low|noninst1864"])
+        n_com_high = int(n * r["p_com_high|noninst1864"])
+        #n_wfh_list = int(n * r["p_wfh_list|noninst1864"])
+        #n_wfh_ulist = int(n * r["p_wfh_ulist|noninst1864"])
+        n_wfh = int(n * r["p_wfh|noninst1864"])
+        #n_not_working = int(n) - (n_com_list + n_com_ulist + n_wfh_list + n_wfh_ulist)
+        n_not_working = int(n) - (n_com_low + n_com_high + n_wfh)
+        #return (n_com_list, n_com_ulist, n_wfh_list, n_wfh_ulist, n_not_working)
+        return (n_com_low, n_com_high, n_wfh, n_not_working)
     else
-        return (0, 0, 0, 0, n)
+        #return (0, 0, 0, 0, n)
+        return (0, 0, 0, n)
     end
 end
 
 ## generate employment fields based on # in each category
-function employment_values(cl,cu,wl,wu,nw)
-    vcl = [trues(cl); falses(cu); falses(wl); falses(wu); falses(nw)]
-    vcu = [falses(cl); trues(cu); falses(wl); falses(wu); falses(nw)]
-    vwl = [falses(cl); falses(cu); trues(wl); falses(wu); falses(nw)]
-    vwu = [falses(cl); falses(cu); falses(wl); trues(wu); falses(nw)]
+function employment_values(n_com_low, n_com_high, wfh, nw)
+    #vcl = [trues(cl); falses(cu); falses(wl); falses(wu); falses(nw)]
+    #vcu = [falses(cl); trues(cu); falses(wl); falses(wu); falses(nw)]
+    #vwl = [falses(cl); falses(cu); trues(wl); falses(wu); falses(nw)]
+    #vwu = [falses(cl); falses(cu); falses(wl); trues(wu); falses(nw)]
+    vcL = [trues(n_com_low); falses(n_com_high); falses(wfh); falses(nw)]
+    vcH = [falses(n_com_low); trues(n_com_high); falses(wfh); falses(nw)]
+    vwfh = [falses(n_com_low); falses(n_com_high); trues(wfh); falses(nw)]
 
-    vw = vcl .| vcu .| vwl .| vwu ##working=true
-    vc = vcl .| vcu ##commuter=true
-    vl = Vector{Union{Missing,Bool}}(vcl .| vwl) ##job_listed=true
-    vl[.!vw] .= missing ##job_listed should be unknown when not working
-    return (vw, vc, vl)
+    #vw = vcl .| vcu .| vwl .| vwu ##working=true
+    #vc = vcl .| vcu ##commuter=true
+    vc = vcL .| vcH ##commuter=true
+    vw = vc .| vwfh ##working=true
+    #vl = Vector{Union{Missing,Bool}}(vcl .| vwl) ##job_listed=true
+    #vl[.!vw] .= missing ##job_listed should be unknown when not working
+    #return (vw, vc, vl)
+    return (vw, vc, vcL, vcH)
 end
 
 ## for evaluating results
@@ -105,12 +117,17 @@ function gq_summary(cbg_code, df_gq, df_idx)
     if haskey(df_idx, cbg_code)
         r = df_gq[df_idx[cbg_code],:]
         (instu18, inst1864, noninst1864, inst65o) = row_gq_pops(r)
-        (com_list, com_ulist, wfh_list, wfh_ulist, nw) = row_gq_employment(noninst1864, true, r)
+        #(com_list, com_ulist, wfh_list, wfh_ulist, nw) = row_gq_employment(noninst1864, true, r)
+        (com_low, com_high, wfh, nw) = row_gq_employment(noninst1864, true, r)
         return (Dict(
             "instu18"=> instu18, "inst1864"=> inst1864,
             "noninst1864"=> noninst1864, "inst65o" => inst65o,
-            "commuter" => com_list + com_ulist, "wfh" => wfh_list + wfh_ulist,
-            "working" => com_list + com_ulist + wfh_list + wfh_ulist,  "not_working" => nw))
+            #"commuter" => com_list + com_ulist, "wfh" => wfh_list + wfh_ulist,
+            #"working" => com_list + com_ulist + wfh_list + wfh_ulist,
+            "commuter" => com_low + com_high, "wfh" => wfh,
+            "com_LODES_low" => com_low, "com_LODES_high" => com_high,
+            "working" => com_low + com_high + wfh,
+            "not_working" => nw))
     else
         return nothing
     end
@@ -151,7 +168,9 @@ function generate_people()
                         (p_samps[r,:SEX]==2), 
                         (p_samps[r,:has_job]==1), 
                         (p_samps[r,:commuter]==1), 
-                        (p_samps[r,:job_listed]==1), 
+                        #(p_samps[r,:job_listed]==1), 
+                        (p_samps[r,:com_LODES_low]==1),
+                        (p_samps[r,:com_LODES_high]==1),
                         p_samps[r,:sch_grade])
                 end
                 households[hh_key] = Household(hh_idx[hh_serial], [(i,hh_i,cbg_i) for i in eachindex(p_vec)])
@@ -197,12 +216,15 @@ function generate_people()
                 ## create group quarter entry and add to dict
                 gqs[(t_idx,cbg_index)] = GQres(gq_types[t_idx], pkeys)
                 ## "..." expands a tuple to multiple function args
-                vWorking,vCommuter,vListed = employment_values(emp_stats[t_idx]...)
+                #vWorking,vCommuter,vListed = employment_values(emp_stats[t_idx]...)
+                vWorking,vCommuter,vComLow,vComHigh = employment_values(emp_stats[t_idx]...)
                 ## create people and add to dict
                 for (i,k) in enumerate(pkeys)
                     ## using 0 for household index and sample#; age and sex unknown (could generate these if needed)
                     people[k] = PersonData((0,cbg_index), 0, assumed_ages[t_idx], missing, 
-                                vWorking[i], vCommuter[i], vListed[i], missing)
+                                vWorking[i], vCommuter[i], 
+                                vComLow[i], vComHigh[i],  
+                                missing)
                 end
             end
         end
@@ -218,7 +240,8 @@ function generate_people()
     gq_idx = Dict(df_gq.Geo .=> eachindex(df_gq.Geo))
     df_gq_summary = DataFrame(geo = String15[],
                     instu18 = Int64[], inst1864 = Int64[], noninst1864 = Int64[], inst65o = Int64[],
-                    working = Int64[],not_working = Int64[],commuter = Int64[],wfh = Int64[])
+                    working = Int64[],not_working = Int64[],commuter = Int64[],wfh = Int64[],
+                    com_LODES_low = Int64[], com_LODES_high = Int64[])
     for c in df_gq.Geo
         push!(df_gq_summary, gq_summary(c, df_gq, gq_idx); cols=:subset)
     end

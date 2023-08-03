@@ -70,8 +70,8 @@ def read_cbg_geo(geos=None):
     return cbg_geo
 
 def read_work_commute():
-    odcols = ['w_geocode','h_geocode','S000']
-    odtypes = {'w_geocode':str,'h_geocode':str,'S000':"Int64"}
+    odcols = ['w_geocode','h_geocode','S000','SE01','SE02','SE03']
+    odtypes = {'w_geocode':str,'h_geocode':str,'S000':"Int64",'SE01':"Int64",'SE02':"Int64",'SE03':"Int64"}
     main_files = glob(os.path.join("work","*od_main_JT01*.[c|z]*"))
     aux_files = glob(os.path.join("work","*od_aux_JT01*.[c|z]*"))
     dfs = []
@@ -366,12 +366,12 @@ def generate_targets(geos, inc_cats, inc_cols):
 ##
 ## need psam_h##.* and psam_p##.* where ## is state code
 ## put into folder "pums"
-def read_psamp():
+def read_psamp(LODES_cutoff):
 
     ## read individual PUMS data
     psamp_dtype = {'SERIALNO':str,'PUMA':str,'ST':str,'PWGTP':"Int64",
                 'AGEP':"Int64",'SEX':str,'RELSHIPP':str,
-                'WAGP':"Int64",'COW':str,'POWPUMA':str,'POWSP':str,'JWTRNS':str,
+                'WAGP':"Int64",'PINCP':"Int64",'PERNP':"Int64",'COW':str,'POWPUMA':str,'POWSP':str,'JWTRNS':str,
                 'WKL':str,'WKW':str,'WRK':str,'ESR':str,
                 'SCH':str,'SCHG':str,'SCHL':str,
                 'ESP':str,'SFN':str,'SFR':str,
@@ -415,12 +415,18 @@ def read_psamp():
     psamp['in_lf'] = psamp['ESR'].isin(['1','2','3','4','5'])
     psamp['nilf'] = psamp['ESR'] == '6'
     psamp['work_from_home'] = psamp['JWTRNS'] == '11'
-    psamp['commuter'] = psamp['JWTRNS'].isin(['01','02','03','04','05','06','07','08','09','10','12'])
     ## "worked past year" with missing commute method means temporarily not working?
+    ## psamp['commuter'] = psamp['JWTRNS'].isin(['01','02','03','04','05','06','07','08','09','10','12'])
     psamp['worked_past_yr'] = psamp['WKL'] == '1'
     ## however, it looks like # ppl with "worked past yr" is usu greater than # ppl in labor force??
-    ## so...
+    ## so... use employment status ESR: 
     psamp['has_job'] = psamp['ESR'].isin(['1','2','4','5'])
+    ## and assume a person with a job is a commuter unless they explicitly work from home
+    psamp['commuter'] = psamp['has_job'] & ~psamp['work_from_home']
+    ## relate job income to categories in LODES commute statistics
+    ##  WAGP is 0 for business owners, use PERNP? or PINCP?
+    psamp['com_LODES_low'] = psamp['commuter'] & (psamp['PINCP'] < LODES_cutoff)
+    psamp['com_LODES_high'] = psamp['commuter'] & (psamp['PINCP'] >= LODES_cutoff)
     psamp['has_disability'] = psamp['DIS'] == '1'
     psamp['age_u3'] = psamp['AGEP'] < 3
     psamp['age_3_5'] = psamp['age_u6'] & ~psamp['age_u3']
@@ -454,13 +460,13 @@ def read_psamp():
 
     ## sum individual column counts in each household
     pstart_idx = len(psamp_dtype.keys())
-    pcols = ['SERIALNO','PWGTP','WAGP','PAP', *psamp.columns[pstart_idx:]]
+    pcols = ['SERIALNO','PWGTP','WAGP','PINCP','PERNP','PAP', *psamp.columns[pstart_idx:]]
     ptotals = psamp[pcols].groupby('SERIALNO',group_keys=True).agg(sum)
 
     return psamp, ptotals
 
 
-def read_hsamp_psamp(ADJINC, inc_cats, inc_cols):
+def read_hsamp_psamp(ADJINC, inc_cats, inc_cols, LODES_cutoff):
 
     ## read household PUMS data
     hsamp_dtype = {'SERIALNO':str,'PUMA':str,'ST':str,'NP':"Int64",'TYPE':str,'CPLT':str,'FES':str,'FS':str,
@@ -552,7 +558,7 @@ def read_hsamp_psamp(ADJINC, inc_cats, inc_cols):
     start_idx = len(hsamp_dtype.keys())
     hsamp[hsamp.columns[start_idx:]] = hsamp[hsamp.columns[start_idx:]].astype('Int64')
 
-    psamp, ptotals = read_psamp()
+    psamp, ptotals = read_psamp(LODES_cutoff)
 
     ## join households and people by serial#
     ##   a sum of samples from this table should have columns matching every census table above
@@ -584,10 +590,10 @@ def read_hsamp_psamp(ADJINC, inc_cats, inc_cols):
     return hsamp, psamp
 
 
-def generate_samples(ADJINC, inc_cats, inc_cols):
+def generate_samples(ADJINC, inc_cats, inc_cols, LODES_cutoff):
 
     print("reading pums data")
-    hsamp, psamp = read_hsamp_psamp(ADJINC, inc_cats, inc_cols)
+    hsamp, psamp = read_hsamp_psamp(ADJINC, inc_cats, inc_cols, LODES_cutoff)
 
     ## generated sample columns that match each of target_columns, in the same order:
     sample_columns = ['fam_hh_2', 'fam_hh_3', 'fam_hh_4', 'fam_hh_5', 'fam_hh_6', 'fam_hh_7o', 
@@ -689,29 +695,27 @@ def generate_samples(ADJINC, inc_cats, inc_cols):
     ## will be used in synth pop generation
     print("writing sample summaries")
 
-    p_summary = psamp[['SERIALNO','PWGTP','PUMA','ST','RELSHIPP',
-                    'AGEP','SEX','WAGP','COW','JWTRNS',
-                    'POWPUMA','POWSP','SCH','SCHG','SCHL',
-                    'WKL','WKW','ESR',
-                    'work_from_home','commuter',
-                    'worked_past_yr','has_job']].reset_index(drop=True).copy(deep=True)
+    p_rawcols = ['SERIALNO','PWGTP','PUMA','ST','RELSHIPP','AGEP','SEX','WAGP','PINCP','PERNP',
+                'COW','JWTRNS','POWPUMA','POWSP','SCH','SCHG','SCHL','WKL','WKW','ESR']
+    p_summcols = [*p_rawcols,'work_from_home','commuter','worked_past_yr','has_job','com_LODES_low','com_LODES_high']
+    p_summary = psamp[p_summcols].reset_index(drop=True).copy(deep=True)
 
     ## 1 = employer likely not included in OD dataset; 0 = likely included; NA = not working
-    p_summary['job_listed'] = p_summary['COW'].map({x:1 for x in ['1','2','3','4','7']} | {x:0 for x in ['5','6','8']})
-    p_summary.loc[~p_summary['worked_past_yr'], 'job_listed'] = np.nan
+    #p_summary['job_listed'] = p_summary['COW'].map({x:1 for x in ['1','2','3','4','7']} | {x:0 for x in ['5','6','8']})
+    #p_summary.loc[~p_summary['worked_past_yr'], 'job_listed'] = np.nan
     ## 1 = private school; 0 = public; NA = not in school
     p_summary['sch_private'] = p_summary['SCH'].map({'3':1, '2':0})
-    col_idx = 18
+    col_idx = len(p_rawcols)
     p_summary[p_summary.columns[col_idx:]] = p_summary[p_summary.columns[col_idx:]].astype("Int64")
     p_summary['sch_grade'] = p_summary['SCHG'].map(dict(zip([str(x).rjust(2,'0') for x in range(1,17)], ['p','k',*[str(x) for x in range(1,13)],'c','g'])))
-    p_summary['commuter_listed'] = ((p_summary['commuter'] == 1) & (p_summary['job_listed'] == 1)).astype("Int64")
-    p_summary['commuter_unlist'] = ((p_summary['commuter'] == 1) & (p_summary['job_listed'] == 0)).astype("Int64")
-    p_summary['wfh_listed'] = ((p_summary['work_from_home'] == 1) & (p_summary['job_listed'] == 1)).astype("Int64")
-    p_summary['wfh_unlist'] = ((p_summary['work_from_home'] == 1) & (p_summary['job_listed'] == 0)).astype("Int64")
+    #p_summary['commuter_listed'] = ((p_summary['commuter'] == 1) & (p_summary['job_listed'] == 1)).astype("Int64")
+    #p_summary['commuter_unlist'] = ((p_summary['commuter'] == 1) & (p_summary['job_listed'] == 0)).astype("Int64")
+    #p_summary['wfh_listed'] = ((p_summary['work_from_home'] == 1) & (p_summary['job_listed'] == 1)).astype("Int64")
+    #p_summary['wfh_unlist'] = ((p_summary['work_from_home'] == 1) & (p_summary['job_listed'] == 0)).astype("Int64")
     p_summary['st_puma'] = p_summary['ST'] + p_summary['PUMA']
     ## note, POWPUMA usually has a code that refers to a group of pumas
-    p_summary['job_loc'] = p_summary['POWSP'].map(lambda x: str(x)[1:]) + p_summary['POWPUMA']
-    p_summary.loc[p_summary['POWPUMA']=='00001','job_loc'] = "" ## job outside US
+    #p_summary['job_loc'] = p_summary['POWSP'].map(lambda x: str(x)[1:]) + p_summary['POWPUMA']
+    #p_summary.loc[p_summary['POWPUMA']=='00001','job_loc'] = "" ## job outside US
 
     p_summary.to_csv(os.path.join('processed','p_samples.csv'))
 
@@ -720,7 +724,7 @@ def generate_samples(ADJINC, inc_cats, inc_cols):
     p_summary['cbsa'] = p_summary['cbsa'].fillna("none")
 
     hsamp[
-        ['NP','HINCP','NOC','NPF','NRC','PWGTP','WAGP',
+        ['NP','HINCP','NOC','NPF','NRC','PWGTP','WAGP','PINCP','PERNP',
         'age_u6', 'age_u18', 'age_6_11', 'age_6_17',
         'age_12_17', 'own_ch_any_age', 'own_ch_u18', 'hholder', 'partner',
         'child_of_hh', 'other_rel', 'non_rel', 'ch_u18_in_hh',
@@ -728,7 +732,7 @@ def generate_samples(ADJINC, inc_cats, inc_cols):
         'sch_1_4', 'sch_5_8', 'sch_9_12', 'sch_college', 'esp_2p_2w',
         'esp_2p_1w', 'esp_2p_nw', 'esp_1p_1w', 'esp_1p_nw', 'male',
         'female', 'employed', 'unemployed', 'armed_forces', 'in_lf',
-        'nilf', 'work_from_home', 'commuter', 'worked_past_yr', 'has_job',
+        'nilf', 'work_from_home', 'commuter', 'worked_past_yr', 'has_job', 'com_LODES_low', 'com_LODES_high',
         'own_ch_u6', 'own_ch_6_11', 'own_ch_12_17',
         'esp_2p_2w_age_u6', 'esp_2p_2w_age_6_17', 'esp_2p_1w_age_u6',
         'esp_2p_1w_age_6_17', 'esp_2p_nw_age_u6', 'esp_2p_nw_age_6_17',
@@ -857,19 +861,24 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
                 & (p_summary['AGEP'] < 65)].copy(deep=True)
 
     ## PWGTP = individual "weight" according to the pums sample data
-    samp_noninst['com_list_wt'] = samp_noninst['commuter_listed'] * samp_noninst['PWGTP']
-    samp_noninst['com_ulist_wt'] = samp_noninst['commuter_unlist'] * samp_noninst['PWGTP']
-    samp_noninst['wfh_list_wt'] = samp_noninst['wfh_listed'] * samp_noninst['PWGTP']
-    samp_noninst['wfh_ulist_wt'] = samp_noninst['wfh_unlist'] * samp_noninst['PWGTP']
-    samp_noninst['com_wt'] = samp_noninst['com_list_wt'] + samp_noninst['com_ulist_wt']
-    samp_noninst['wfh_wt'] = samp_noninst['wfh_list_wt'] + samp_noninst['wfh_ulist_wt']
-    samp_noninst['list_wt'] = samp_noninst['com_list_wt'] + samp_noninst['wfh_list_wt']
-    samp_noninst['ulist_wt'] = samp_noninst['com_ulist_wt'] + samp_noninst['wfh_ulist_wt']
+    #samp_noninst['com_list_wt'] = samp_noninst['commuter_listed'] * samp_noninst['PWGTP']
+    #samp_noninst['com_ulist_wt'] = samp_noninst['commuter_unlist'] * samp_noninst['PWGTP']
+    #samp_noninst['wfh_list_wt'] = samp_noninst['wfh_listed'] * samp_noninst['PWGTP']
+    #samp_noninst['wfh_ulist_wt'] = samp_noninst['wfh_unlist'] * samp_noninst['PWGTP']
+    #samp_noninst['com_wt'] = samp_noninst['com_list_wt'] + samp_noninst['com_ulist_wt']
+    samp_noninst['com_wt'] = samp_noninst['commuter'] * samp_noninst['PWGTP']
+    #samp_noninst['wfh_wt'] = samp_noninst['wfh_list_wt'] + samp_noninst['wfh_ulist_wt']
+    samp_noninst['wfh_wt'] = samp_noninst['work_from_home'] * samp_noninst['PWGTP']
+    #samp_noninst['list_wt'] = samp_noninst['com_list_wt'] + samp_noninst['wfh_list_wt']
+    #samp_noninst['ulist_wt'] = samp_noninst['com_ulist_wt'] + samp_noninst['wfh_ulist_wt']
     samp_noninst['working_wt'] = samp_noninst['com_wt'] + samp_noninst['wfh_wt']
+    samp_noninst['com_low_wt'] = samp_noninst['com_LODES_low'] * samp_noninst['PWGTP']
+    samp_noninst['com_high_wt'] = samp_noninst['com_LODES_high'] * samp_noninst['PWGTP']
 
-    agg_dict = {'PWGTP':sum,'com_list_wt':sum,'com_ulist_wt':sum,
-                                'wfh_list_wt':sum,'wfh_ulist_wt':sum,
-                                'com_wt':sum,'list_wt':sum,'working_wt':sum}
+    agg_dict = {'PWGTP':sum,
+                #'com_list_wt':sum,'com_ulist_wt':sum,'wfh_list_wt':sum,'wfh_ulist_wt':sum,
+                'com_wt':sum,'wfh_wt':sum,'working_wt':sum,'com_low_wt':sum,'com_high_wt':sum
+                }
     ## use county stats to get enough samples
     samp_noninst_by_county = samp_noninst.groupby('county',group_keys=True).agg(agg_dict)
     p_noninst_by_county = samp_noninst_by_county.apply(lambda x: x/samp_noninst_by_county['PWGTP'], axis=0)
@@ -881,7 +890,10 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
     df_gq = df_gq.join(cbg_geo['st_puma']).reset_index().merge(puma_to_county,how='left',on='st_puma').set_index('Geo')
     df_gq = df_gq.merge(p_noninst_by_county, how='left', left_on="county", right_index=True)
     keep_cols = ['group quarters:', 'group quarters:under 18', 'group quarters:18 to 64', 'group quarters:65 and over', 
-        'p_u18_inst', 'p_18_64_inst', 'p_65o_inst', 'com_list_wt', 'com_ulist_wt', 'wfh_list_wt', 'wfh_ulist_wt']
+        'p_u18_inst', 'p_18_64_inst', 'p_65o_inst', 
+        #'com_list_wt', 'com_ulist_wt', 'wfh_list_wt', 'wfh_ulist_wt'
+        'com_wt','wfh_wt','working_wt','com_low_wt','com_high_wt'
+        ]
 
     ##
     ## a couple of cbgs in the ACS aren't in the tract-to-puma xwalk
@@ -892,10 +904,12 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
     missing_puma = cbg_geo.index[cbg_geo['st_puma'].isna()]
     keep_rows = ~df_gq.index.isin(missing_puma)
 
-    df_gq = df_gq.loc[keep_rows, keep_cols].rename(columns={'com_list_wt':'p_com_list|noninst1864',
-                        'com_ulist_wt':'p_com_ulist|noninst1864',
-                        'wfh_list_wt':'p_wfh_list|noninst1864',
-                        'wfh_ulist_wt':'p_wfh_ulist|noninst1864'}).copy(deep=True)
+    df_gq = df_gq.loc[keep_rows, keep_cols].rename(columns={
+                        #'com_list_wt':'p_com_list|noninst1864','com_ulist_wt':'p_com_ulist|noninst1864',
+                        #'wfh_list_wt':'p_wfh_list|noninst1864','wfh_ulist_wt':'p_wfh_ulist|noninst1864'
+                        'com_wt':'p_com|noninst1864','wfh_wt':'p_wfh|noninst1864','working_wt':'p_working|noninst1864',
+                        'com_low_wt':'p_com_low|noninst1864','com_high_wt':'p_com_high|noninst1864'
+                        }).copy(deep=True)
 
     df_gq.to_csv(os.path.join('processed','group_quarters.csv'))
     return None
@@ -906,7 +920,17 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
 ##
 ## origin-destination work commute data
 ## https://lehd.ces.census.gov/data/
-
+## Origin-Destination (OD) File Structure
+## 1 w_geocode Char15 Workplace Census Block Code
+## 2 h_geocode Char15 Residence Census Block Code
+## 3 S000 Num Total number of jobs
+## 4 SA01 Num Number of jobs of workers age 29 or younger
+## 5 SA02 Num Number of jobs for workers age 30 to 5418
+## 6 SA03 Num Number of jobs for workers age 55 or older
+## 7 SE01 Num Number of jobs with earnings $1250/month or less
+## 8 SE02 Num Number of jobs with earnings $1251/month to $3333/month
+## 9 SE03 Num Number of jobs with earnings greater than $3333/month 
+##
 ## use JT01, "primary" jobs (because JT00 counts 2+ jobs for the same individual)
 ## "main" = work and live in state
 ## "aux" = work in state, live outside state
@@ -917,6 +941,17 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
 ##  optionally, aux files for other states to capture commute patterns outside the above state(s)
 ##
 ## put into folder "work"
+
+## this fn converts series to proportions
+##    unless the series is all zeros, then p = 1 / length
+##    (e.g. if an origin claims nobody there belongs to a certain income category, but we know that's not true)
+def p_or_frac(ser):
+    tot = ser.sum()
+    if tot==0:
+        return np.ones(len(ser)) / len(ser)
+    else:
+        return ser / tot
+
 def generate_workplaces(geos):
     print("reading commute data")
 
@@ -952,20 +987,29 @@ def generate_workplaces(geos):
     od.loc[live_in_area & ~work_in_area_all, "work_dest"] = "outside"
     od = od.loc[live_in_area]
 
+    ## two income categories: SE01 + SE02 (low), SE03 (high)
+    od["inc_low"] = od["SE01"] + od["SE02"]
+    od["inc_high"] = od["SE03"]
+
     ## calculate proportions
-    od_matrix = od[['h_cbg','work_dest','S000']] \
-        .groupby(['h_cbg','work_dest'],group_keys=True) \
-        .agg({"S000":sum}) \
-        .groupby(level=0,group_keys=False) \
-        .apply(lambda x: x / x.sum()) \
+    ## apply() on groupby acts on a dataframe; then we apply() a fn to each col of that df (yes it's confusing)    
+    od_matrix = od[['h_cbg','work_dest','inc_low','inc_high']] \
+        .groupby(['h_cbg','work_dest'],group_keys=True).agg({"inc_low":sum,"inc_high":sum}) \
+        .groupby(level=0,group_keys=False).apply(lambda x: x.apply(p_or_frac)) \
+        .loc[:, ['inc_low','inc_high']] \
+        .stack().unstack(level="work_dest").fillna(0)
+
+    ## calculate proportions (not separated by income)
+    od_matrix2 = od[['h_cbg','work_dest','S000']] \
+        .groupby(['h_cbg','work_dest'],group_keys=True).agg({"S000":sum}) \
+        .groupby(level=0,group_keys=False).apply(lambda x: x.apply(p_or_frac)) \
         .loc[:,'S000'] \
-        .unstack() \
-        .fillna(0)
+        .unstack().fillna(0)
 
     od_matrix.to_csv(os.path.join('processed','work_od_matrix.csv'),float_format="%.6g")
+    od_matrix2.to_csv(os.path.join('processed','work_od_matrix_no_inc.csv'),float_format="%.6g")
 
     return work_counties
-
 
 ## employer size data from:
 ## https://www.census.gov/programs-surveys/cbp/data/datasets.html
@@ -1098,6 +1142,7 @@ def main():
     ## read income categories
     inc_cats = d.get("inc_cats",inc_cats_def)
     inc_cols = d.get("inc_cols",inc_cols_def)
+    LODES_cutoff = d.get("LODES_annual_income_boundary",40000)
     ## read states/counties to include
     geos = d.get("geos",None)
 
@@ -1105,7 +1150,7 @@ def main():
     os.makedirs("processed",exist_ok=True)
 
     acs_summary, cbg_geo = generate_targets(geos, inc_cats, inc_cols)
-    p_summary = generate_samples(ADJINC, inc_cats, inc_cols)
+    p_summary = generate_samples(ADJINC, inc_cats, inc_cols, LODES_cutoff)
     generate_gq(geos, acs_summary, cbg_geo, p_summary)
     work_counties = generate_workplaces(geos)
     generate_work_sizes(work_counties)
@@ -1227,9 +1272,9 @@ def generate_test_targets(geos):
     return None
 
 
-def gen_samp_test_cols(ADJINC, inc_cats, inc_cols):
+def gen_samp_test_cols(ADJINC, inc_cats, inc_cols, LODES_cutoff):
 
-    hsamp, psamp = read_hsamp_psamp(ADJINC, inc_cats, inc_cols)
+    hsamp, psamp = read_hsamp_psamp(ADJINC, inc_cats, inc_cols, LODES_cutoff)
     ## generated sample columns that match each of target_columns, in the same order:
     sample_columns = ['own_ch_u3_in_fam_married',
         'own_ch_3_5_in_fam_married',
@@ -1295,11 +1340,12 @@ def test_cols():
     ## read income categories
     inc_cats = d.get("inc_cats",inc_cats_def)
     inc_cols = d.get("inc_cols",inc_cols_def)
+    LODES_cutoff = d.get("LODES_annual_income_boundary",40000)
     ## read states/counties to include
     geos = d.get("geos",None)
 
     generate_test_targets(geos)
-    gen_samp_test_cols(ADJINC, inc_cats, inc_cols)
+    gen_samp_test_cols(ADJINC, inc_cats, inc_cols, LODES_cutoff)
 
 
 #test_cols()

@@ -541,3 +541,115 @@ s2 = [rand_test_scores[k] for k in cbgs]
 
 
 
+
+
+cbg_idxs = dser_path("jlse/cbg_idxs.jlse")
+hh = dser_path("jlse/hh.jlse")
+gqs = dser_path("jlse/gqs.jlse")
+people = dser_path("jlse/people.jlse")
+df_gq_summary = dser_path("jlse/df_gq_summary.jlse")
+
+length(values(people))
+sum(p.working for p in values(people))
+sum(p.commuter for p in values(people))
+sum(p.com_LODES_low for p in values(people))
+sum(p.com_LODES_high for p in values(people))
+sum(coalesce(p.female,rand([true,false])) for p in values(people))
+mean(p.age for p in values(people))
+
+sum(df_gq_summary.noninst1864)
+sum(df_gq_summary.working)
+sum(df_gq_summary.not_working)
+sum(df_gq_summary.commuter)
+sum(df_gq_summary.wfh)
+sum(df_gq_summary.com_LODES_low)
+sum(df_gq_summary.com_LODES_high)
+
+gq_ppl = [people[k] for k in reduce(vcat, [x.residents for x in values(gqs)])]
+sum(df_gq_summary.instu18 + df_gq_summary.inst1864 + df_gq_summary.noninst1864 + df_gq_summary.inst65o)
+
+sum(p.working for p in values(gq_ppl))
+sum(p.commuter for p in values(gq_ppl))
+sum(p.com_LODES_low for p in values(gq_ppl))
+sum(p.com_LODES_high for p in values(gq_ppl))
+mean(p.age for p in values(gq_ppl))
+
+df = read_df("processed/work_od_matrix.csv"; types=Dict("h_cbg"=>String15))
+df_noinc = read_df("processed/work_od_matrix_no_inc.csv"; types=Dict("h_cbg"=>String15))
+df
+df_noinc
+df[!,:outside]
+df_noinc[!, :outside]
+
+hh_samps = read_df("processed/hh_samples.csv"; types=Dict("SERIALNO"=>String15))
+hh_samps[:,
+        [:SERIALNO,:NP,:HINCP,
+        #:employed, :unemployed, :armed_forces, 
+        :in_lf,
+        :nilf, :work_from_home, :commuter, 
+        #:worked_past_yr,
+        :has_job,:com_LODES_low,:com_LODES_high]]
+
+p_samps = read_df("processed/p_samples.csv"; types=Dict("SERIALNO"=>String15));
+p_samps[: , [:SERIALNO,:WAGP,:PINCP,:PERNP,:COW,:ESR,:work_from_home,:commuter,:has_job,:com_LODES_low,:com_LODES_high]]
+
+
+
+
+
+
+
+
+using Graphs
+using GraphPlot
+using LinearAlgebra
+
+n_k = 2
+mean_deg = 8
+n1 = 18
+n2 = 9
+n_vec = [n1,n2]
+
+w_planted = Diagonal(fill(mean_deg,n_k))
+prop_i = n_vec ./ sum(n_vec)
+w_random = repeat(transpose(prop_i) * mean_deg, n_k)
+
+assoc_coeff = 0.9
+c_matrix = assoc_coeff * w_planted + (1 - assoc_coeff) * w_random
+
+## can't have more than n connections to a group
+for r in eachrow(c_matrix)
+    r .= min.(r,n_vec)
+end
+c_matrix
+
+## can't have more than n-1 within-group connections
+d_tmp = view(c_matrix, diagind(c_matrix))
+d_tmp .= min.(d_tmp, n_vec .- 1)
+c_matrix
+
+## note, in a stochastic block model (SBM) the degree distribution within blocks is similar to 
+##  a random (erdos-renyi) network. For a more realistic degree distribution (e.g., with hubs)
+##  try a degree-corrected SBM (Karrer & Newman 2010, https://arxiv.org/abs/1008.3926)
+g = stochastic_block_model(c_matrix,n_vec)
+gplot(g)
+
+## Graphs.jl sometimes creates 0-degree vertices but I don't think it should
+fix_zeros = findall(degree(g).==0)
+for x in fix_zeros
+    add_edge!(g, x, rand(vertices(g)))
+end
+
+mean(degree(g))
+mean(degree(g)[1:n1])
+mean(degree(g)[(n1+1):end])
+
+c_matrix
+
+g2 = stochastic_block_model(reshape([8.0], 1, 1),[30])
+gplot(g2)
+mean(degree(g2))
+
+
+
+

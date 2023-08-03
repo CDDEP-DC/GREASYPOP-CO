@@ -251,10 +251,10 @@ function process_counties(counties=[])
     ## weight households more than individuals? (not currently implemented)
     #targ_weights = [ones(1,43).*2.0 ones(1,length(targ_colnames)-43)]
     dConfig = tryJSON("config.json")
-    c_val = get(dConfig, "CO_crit_val", 10.0)
-    CO_cooldown = get(dConfig, "CO_cooldown", 0.99)
+    c_val::Float64 = get(dConfig, "CO_crit_val", 10.0)
+    CO_cooldown::Float64 = get(dConfig, "CO_cooldown", 0.99)
     CO_cooldown_slow = 0.5 + 0.5 * CO_cooldown
-    CO_maxgens = get(dConfig, "CO_maxgens", 200000)
+    CO_maxgens::Int = get(dConfig, "CO_maxgens", 200000)
     CO_report = CO_maxgens + 1
     
     params = Dict(:maxgens => CO_maxgens, :critval => c_val, :cooldown => CO_cooldown, :report => CO_report)

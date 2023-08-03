@@ -102,7 +102,7 @@ const Pnum = UInt32
 const Hkey = Tuple{Hnum,CBGkey}
 const Pkey = Tuple{Pnum,Hnum,CBGkey}
 const GQkey = Tuple{UInt16,CBGkey}
-const WRKkey = Tuple{UInt32, String31}
+const WRKkey = Tuple{UInt32, UInt8, String31}
 
 struct PersonData
     hh::Hkey
@@ -111,7 +111,9 @@ struct PersonData
     female::Union{Missing,Bool}
     working::Bool
     commuter::Bool
-    job_listed::Union{Missing,Bool}
+    #job_listed::Union{Missing,Bool}
+    com_LODES_low::Bool ## commutes to <40k/yr job
+    com_LODES_high::Bool ## commutes to >40k/yr job
     sch_grade::Union{Missing,String3}
 end
 

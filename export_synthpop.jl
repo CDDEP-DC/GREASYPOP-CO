@@ -34,8 +34,9 @@ write_df("pop_export/hh.csv",df)
 d = dser_path("jlse/people.jlse")
 df = DataFrame(sort([
             (p_id=Int(k[1]), hh_id=Int(k[2]), cbg_id=Int(k[3]), sample_index=mcon(Int,v.sample),
-            age=mcon(Int,v.age), female=mcon(Int,v.female), working=mcon(Int,v.working),
-            commuter=mcon(Int,v.commuter), sch_grade=mcon(String,v.sch_grade))
+            age=mcon(Int,v.age), female=mcon(Int,v.female), working=mcon(Int,v.working), commuter=mcon(Int,v.commuter), 
+            commuter_LODES_low_inc=mcon(Int,v.com_LODES_low) , commuter_LODES_high_inc=mcon(Int,v.com_LODES_high),
+            sch_grade=mcon(String,v.sch_grade))
             for (k,v) in d
             ], by=x->(x.cbg_id,x.hh_id,x.p_id)))
 write_df("pop_export/people.csv",df)
@@ -86,9 +87,9 @@ write_df("pop_export/gq_workers.csv",df)
 
 d = dser_path("jlse/company_workers.jlse")
 df = DataFrame(sort([
-            (employer_geo_code=String(k[2]), geo_employer_num=Int(k[1]), p_id=Int(v[1]), p_hh_id=Int(v[2]), p_cbg_id=Int(v[3]))
+            (employer_geo_code=String(k[3]), employer_type=Int(k[2]), employer_num=Int(k[1]), p_id=Int(v[1]), p_hh_id=Int(v[2]), p_cbg_id=Int(v[3]))
             for (k,v) in dflat(d)
-            ], by=x->(x.employer_geo_code,x.geo_employer_num)))
+            ], by=x->(x.employer_geo_code,x.employer_type,x.employer_num)))
 write_df("pop_export/company_workers.csv",df)
 
 d = dser_path("jlse/outside_workers.jlse")
