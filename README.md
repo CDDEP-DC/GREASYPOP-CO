@@ -6,6 +6,8 @@
 * generates a synthetic population (people, households, schools, workplaces) from US census data for a specified region, at census block group (CBG) resolution
 * generates a synthetic contact network of regular household, school, and work contacts
 
+* now with income-segregated workplaces!
+
 ## files in this project
 
     config.json - specify the region for which to generate the synth pop; misc other settings
