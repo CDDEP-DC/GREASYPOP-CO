@@ -69,13 +69,13 @@
 	"noninst_res_per_worker": 50,
 	"min_gq_workers": 2,
     "min_gq_residents": 20,
-	"n_closest_schools": 5,
+	"n_closest_schools": 4,
 	"p_closest_school": 0.9,
     "CO_crit_val": 10.0,
     "CO_cooldown": 0.99,
     "CO_maxgens": 200000,
     "workplace_K": 8,
-    "school_K": 12,
+    "school_K": 8,
     "netw_K": 8,
     "netw_B": 0.25
 }

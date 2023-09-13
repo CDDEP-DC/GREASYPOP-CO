@@ -1160,10 +1160,6 @@ def main():
     print("done")
 
 
-main()
-
-
-
 
 
 def generate_test_targets(geos):
@@ -1347,6 +1343,9 @@ def test_cols():
     generate_test_targets(geos)
     gen_samp_test_cols(ADJINC, inc_cats, inc_cols, LODES_cutoff)
 
+
+
+main()
 
 #test_cols()
 
