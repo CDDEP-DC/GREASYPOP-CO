@@ -11,23 +11,30 @@ You should have received a copy of the GNU Affero General Public License along w
 =#
 
 #using Distributed
-#using Random
+using Random
 using Graphs
 #using GraphPlot
 using SparseArrays
 using LinearAlgebra
-#using SharedArrays
-#using Distributions
-#using Plots
+using SharedArrays
+using Distributions
+using Plots
+using StatsPlots
 using StatsBase
 
-using MatrixDepot
+
+#using MatrixDepot
 #using SNAPDatasets
 
 include("utils.jl")
 include("fileutils.jl")
 
-## from Bonchev 2004
+
+##
+## network stats
+##
+
+## from Bonchev 2004, Ir(vd)
 function Bonchev_vd_info0(t::AbstractGraph{T}) where T
     v = filter(x->x>0,degree(t))
     A = sum(v)
@@ -78,10 +85,72 @@ makehub(t::AbstractGraph{T}) where T = sum(degree(t) .^ 2) / sum(degree(t))
 
 
 
-f(v) = mean(v[2:end] ./ v[1:end-1])
+#f(v) = mean(v[2:end] ./ v[1:end-1])
 
 
 net_comp = Dict()
+#net_comp = dser_path("jlse/net_comp.jlse")
+
+#M = sparse(Symmetric(dser_path("jlse/hh_adj_mat.jlse"))) .| sparse(Symmetric(dser_path("jlse/adj_mat.jlse")))
+#M = dser_path("jlse/hh_adj_mat.jlse") .| dser_path("jlse/adj_mat.jlse")
+
+x = (Edge(p) for p in zip(findnz(
+    dser_path("jlse/hh_adj_mat.jlse") .| dser_path("jlse/adj_mat.jlse")
+    )[1:2]...))
+
+t = SimpleGraphFromIterator(x)
+#t = dser_path("jlse/LA_simplegraph.jlse")
+
+x = nothing
+GC.gc()
+
+N = nv(t)
+n0 = sum(degree(t).==0)
+mean(degree(t))
+adj_n0 = false
+
+
+net_comp["LA_8"] = [mean(local_clustering_coefficient(t))
+global_clustering_coefficient(t)
+mean(pagerank(t))
+rich_club(t,1)
+assortativity(t)
+Bonchev_vd_info(t)
+makehub(t)
+mean(degree(t))
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
+
+t = nothing
+GC.gc()
+#t = barabasi_albert(N, 4); adj_n0 = true
+#t = erdos_renyi(N, 8/N); adj_n0 = true
+#t = watts_strogatz(N,8,0.25); adj_n0 = true
+mean(degree(t))
+
+## disconnect n0 vertices
+if adj_n0
+    for x in shuffle(vertices(t))[1:n0]
+        for d in neighbors(t,x)
+            rem_edge!(t,x,d)
+        end
+    end
+end
+mean(degree(t))
+
+
+
+
+ser_path("jlse/net_comp.jlse", net_comp)
+
+nc_names = ["local clust","global clust","pagerank","rich club","assortativity","bonchev","makehub","mean degree"]
+use_cols = [8,1,2,5,7,6]
+[nc_names[x] for x in use_cols]
+[k=>[round(v[x];sigdigits=3) for x in use_cols] for (k,v) in net_comp]
+
+
+
+
 
 m = matrixdepot("SNAP/loc-Gowalla")
 t = SimpleGraph(m)
@@ -93,7 +162,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 m = matrixdepot("SNAP/loc-Brightkite")
 t = SimpleGraph(m)
@@ -105,7 +175,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 m = matrixdepot("Newman/as-22july06")
 t = SimpleGraph(m)
@@ -117,7 +188,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 m = matrixdepot("Barabasi/NotreDame_yeast")
 t = SimpleGraph(m)
@@ -129,7 +201,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 m = matrixdepot("DIMACS10/coPapersDBLP")
 t = SimpleGraph(m)
@@ -141,7 +214,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 m = matrixdepot("SNAP/com-DBLP")
 t = SimpleGraph(m)
@@ -153,7 +227,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 ser_path("jlse/net_comp.jlse",net_comp)
 
@@ -167,7 +242,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 ser_path("jlse/net_comp.jlse",net_comp)
 t = nothing
@@ -182,7 +258,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 ser_path("jlse/net_comp.jlse",net_comp)
 t = nothing
@@ -197,7 +274,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 ser_path("jlse/net_comp.jlse",net_comp)
 t = nothing
@@ -212,7 +290,8 @@ assortativity(t)
 Bonchev_vd_info(t)
 makehub(t)
 mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
+#mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
+]
 
 ser_path("jlse/net_comp.jlse",net_comp)
 t = nothing
@@ -230,42 +309,7 @@ GC.gc()
 #t = loadsnap(:facebook_combined)
 #t = loadsnap(:soc_slashdot0902_u)
 
-net_comp = dser_path("jlse/net_comp.jlse")
-
-t = dser_path("jlse/full_graph.jlse")
-cc_loc = mean(local_clustering_coefficient(t, vertices(t)))
-cc_glob = global_clustering_coefficient(t)
-mu_prank = mean(pagerank(t))
-rclub = rich_club(t,1)
-assy = assortativity(t)
-I_v = Bonchev_vd_info(t)
-mhub = makehub(t)
-mdeg = mean(degree(t))
-r = mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
-
-net_comp["LA_run2"] = [mean(local_clustering_coefficient(t))
-global_clustering_coefficient(t)
-mean(pagerank(t))
-rich_club(t,1)
-assortativity(t)
-Bonchev_vd_info(t)
-makehub(t)
-mean(degree(t))
-mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)]
-
-ser_path("jlse/net_comp.jlse", net_comp)
-
-#t = watts_strogatz(17609971,8,0.25)
-
-#t = barabasi_albert(17609971, 4)
-
-
-
-
-
-
-
-
+#net_comp = dser_path("jlse/net_comp.jlse")
 
 mask = BitVector([1,1,0,0,1,0])
 y = reduce(hcat, net_comp[k][mask] for k in
@@ -279,7 +323,9 @@ plot([1:3], y, shape=reshape(shapes,1,10),
 
 
 
-
+##
+## checking fit of synth pop
+##
 
 FTdist(v1::Matrix{T},v2::Matrix{T}) where T<:Real = sum((sqrt.(v1 .+ one(T)) .- sqrt.(v2 .+ one(T))) .^ 2)
 summarize(idxs::Vector{Int64}, pop::Matrix{Int64}) = sum(view(pop,idxs,:), dims=1)
@@ -398,11 +444,6 @@ err_by_testvar = [(n, SRMSE(s_mat[:,i],t_mat[:,i])) for (i,n) in enumerate(targ_
 y = [[x[2] for x in err_by_targ]; [x[2] for x in err_by_testvar]]
 scatter(y, label="", xticks=:none)
 
-#quantile.(Chisq(66), [0.05, 0.95])
-#cdf(Chisq(66),48.0)
-
-#quantile.(Chisq(37), [0.05, 0.95])
-#cdf(Chisq(37),124.0)
 
 
 
@@ -513,8 +554,9 @@ function process_counties(test::Bool)
 	return nothing
 end
 
-#process_counties(true)
-#process_counties(false)
+calc_test_scores()
+process_counties(true)
+process_counties(false)
 
 geos = read_targ_geo()
 counties = unique(values(geos[2]))
@@ -530,18 +572,57 @@ rand_test_scores = merge(x...)
 
 cbgs = collect(keys(scores))
 
+s05,s95 = log.(0.25 .* quantile.(Chisq(66), [0.05, 0.95]))
+t05,t95 = log.(0.25 .* quantile.(Chisq(37), [0.05, 0.95]))
+
 s1 = [scores[k] for k in cbgs]
 s2 = [rand_scores[k] for k in cbgs]
 
-plot([s1 s2], label="", xticks=:none)
-plot([log.(s1) log.(s2)], label="", xticks=:none)
+t1 = [test_scores[k] for k in cbgs]
+t2 = [rand_test_scores[k] for k in cbgs]
 
-s1 = [test_scores[k] for k in cbgs]
-s2 = [rand_test_scores[k] for k in cbgs]
+circ = Shape(Plots.partialcircle(0, 2π))
+plot([log.(s1) log.(s2)], label="", xticks=:none, seriestype=:scatter, grid=false,
+    ylims=(1.0,9.1),
+    xlabel="census block group",ylabel="ln(¼ FT²)",
+    markerstrokewidth=[0 0.5], markersize=[1.5 2.5], markercolor=[:black :white],
+    markershape=[:none circ],markerstrokecolor=:black, markeralpha=[1.0 0.5],
+    markerstrokealpha=[1.0 0.75],
+    dpi=300)
+hline!([s95], linecolor=:orangered, linestyle=:dash, label="")
+hline!([t95], linecolor=:orangered, linestyle=:dash, label="")
+savefig("scores-vs-rand.png")
+savefig("test-vs-rand.png")
+
+
+
+xlabels = ["optimized selection,\ntargeted variables" "random selection,\ntargeted variables"]
+vals = [log.(s1) log.(s2)]
+crit_val = s95
+
+xlabels = ["optimized selection,\nuntargeted variables" "random selection,\nuntargeted variables"]
+vals = [log.(t1) log.(t2)]
+crit_val = t95
+
+
+dotplot(xlabels, vals, label="",grid=false,ylabel="mismatch score",tick_direction=:out, 
+    ylims=(1.0,9.1),
+    markerstrokewidth=0, markersize=1.5, markercolor=:black, markershape=:none,
+    markeralpha=0.5,
+    dpi=300)
+
+violin!(xlabels, vals, label="",
+    fillalpha=0.0,linealpha=0.5,linewidth=0.5,linecolor=:black)
+
+hline!([crit_val], linecolor=:orangered, linestyle=:dash, label="")
+
+savefig("scores-vs-rand.png")
+savefig("test-vs-rand.png")
 
 
 
 
+## testing income segregated workplaces
 
 cbg_idxs = dser_path("jlse/cbg_idxs.jlse")
 hh = dser_path("jlse/hh.jlse")
@@ -598,7 +679,7 @@ p_samps[: , [:SERIALNO,:WAGP,:PINCP,:PERNP,:COW,:ESR,:work_from_home,:commuter,:
 
 
 
-
+## testing stochastic block model
 
 using Graphs
 using GraphPlot
@@ -652,4 +733,108 @@ mean(degree(g2))
 
 
 
+
+## making sure all schools are getting students allocated 
+
+sch_students = dser_path("jlse/sch_students.jlse")
+
+schools = read_df("processed/schools.csv"; types=Dict("NCESSCH"=>String15))
+distmat = read_df("processed/cbg_sch_distmat.csv"; types=Dict("GEOID"=>String15))
+schools_idx = Dict(schools.NCESSCH .=> eachindex(schools.NCESSCH))
+cap_by_school = Dict(k=>schools[schools_idx[k], "STUDENTS"] for (k,_) in sch_students)
+n_students_by_school = Dict(k=>length(v) for (k,v) in sch_students)
+
+sum(values(cap_by_school))
+sum(values(n_students_by_school))
+sum(values(n_students_by_school)) / sum(values(cap_by_school))
+
+spots_left = Dict(k=>(cap_by_school[k]-n_students_by_school[k]) for (k,_) in sch_students)
+p_filled = Dict(k=>(n_students_by_school[k] / cap_by_school[k]) for (k,_) in sch_students)
+p_new = Dict(k=>(n_students_by_school[k] / cap_by_school[k]) for (k,_) in sch_students)
+
+partialsort(collect(values(p_filled)),1:20)
+partialsort(collect(values(p_new)),1:20)
+
+sort(collect(values(p_filled)))[end-20:end]
+
+using Plots
+plot!(sort(collect(values(p_filled))))
+plot!(sort(collect(values(p_new))))
+
+sortperm(collect(values(p_filled)))
+cap_by_school[collect(keys(p_filled))[601]]
+
+
+## checking census data integrity
+
+c10 = read_df("geo/2010_Census_Tract_to_2010_PUMA.txt";types=String)
+acs_hh = read_df("bak/hh_all.csv",types=Dict("Geo"=>String))
+od_matrix = read_df("processed/work_od_matrix_no_inc.csv"; types=Dict("h_cbg"=>String))
+dConfig = tryJSON("config.json")
+geos = String.(dConfig["geos"])
+
+c10[!,"Tract"] = c10.STATEFP .* c10.COUNTYFP .* c10.TRACTCE
+c10[!,"County"] = c10.STATEFP .* c10.COUNTYFP
+c10 = c10[[(r.STATEFP in geos || r.County in geos) for r in eachrow(c10)], ["Tract","PUMA5CE"]]
+
+cbgs_in_acs = acs_hh.Geo
+tracts_in_acs = unique( [x[1:end-1] for x in acs_hh.Geo] )
+tracts_in_c10 = c10.Tract
+all(sort(tracts_in_acs) .== sort(tracts_in_c10))
+
+cbg_work_dests = names(od_matrix)[2:end-1]
+cbg_origins = od_matrix.h_cbg
+all([in(x,cbgs_in_acs) for x in cbg_work_dests])
+all([in(x,cbgs_in_acs) for x in cbg_origins])
+
+mask = [!in(x,cbg_origins) for x in cbgs_in_acs]
+not_in_origins = cbgs_in_acs[mask]
+acs_hh[[r.Geo in not_in_origins for r in eachrow(acs_hh)],:]
+
+
+## test location-based contact matrices
+
+loc_mat_keys = dser_path("jlse/loc_mat_keys.jlse")
+work_loc_contact_mat = dser_path("jlse/work_loc_contact_mat.jlse")
+res_loc_contact_mat = dser_path("jlse/res_loc_contact_mat.jlse")
+work_loc_lookup = dser_path("jlse/work_loc_lookup.jlse")
+res_loc_lookup = dser_path("jlse/res_loc_lookup.jlse")
+
+w = dser_path("jlse/company_workers.jlse") ## employers/employees (with work locations)
+hh = dser_path("jlse/hh.jlse") ## households/residents (with hh locations)
+cbg_idxs = dser_path("jlse/cbg_idxs.jlse") ## location (cbg) keys used in person/hh keys
+cbg_idxs = Dict(k=>String31(v) for (k,v) in cbg_idxs)
+gqs = dser_path("jlse/gqs.jlse") ## group-quarters/residents (with gq locations)
+## assume only non-inst GQ residents are available for ephemeral local contacts
+gq_noninst = filterv(x->x.type==:noninst1864, gqs)
+## use the same matrix indices as in the regular contact networks
+k = dser_path("jlse/adj_mat_keys.jlse")
+p_idxs = Dict(k .=> eachindex(k))
+
+## group potential encounters by census tract (CBG seems too restrictive)
+hh_tracts = unique(x[1:end-1] for x in values(cbg_idxs))
+work_tracts = unique(x[3][1:end-1] for x in keys(w))
+tracts = sort(unique([hh_tracts; work_tracts]))
+
+loc_mat_keys_rev = Dict(v=>k for (k,v) in loc_mat_keys)
+
+i = 100
+t = findnz(work_loc_contact_mat[:,i])[1]
+all(work_loc_lookup[x] == i for x in t)
+loc_mat_keys_rev[i]
+filterk(x->x[3][1:end-1]==loc_mat_keys_rev[i], w)
+reduce(vcat, values(filterk(x->x[3][1:end-1]==loc_mat_keys_rev[i], w)))
+t2 = [p_idxs[k[1:3]] for k in reduce(vcat, values(filterk(x->x[3][1:end-1]==loc_mat_keys_rev[i], w)))]
+all(sort(t) .== sort(t2))
+
+i = 123
+t = findnz(res_loc_contact_mat[:,i])[1]
+all(res_loc_lookup[x] == i for x in t)
+loc_mat_keys_rev[i]
+filterk(x->cbg_idxs[x[2]][1:end-1]==loc_mat_keys_rev[i], hh)
+tk1 = reduce(vcat, [h.people for h in values(filterk(x->cbg_idxs[x[2]][1:end-1]==loc_mat_keys_rev[i], hh))])
+filterk(x->cbg_idxs[x[2]][1:end-1]==loc_mat_keys_rev[i], gq_noninst)
+tk2 = reduce(vcat, [x.residents for x in values(filterk(x->cbg_idxs[x[2]][1:end-1]==loc_mat_keys_rev[i], gq_noninst))])
+t2 = [p_idxs[k[1:3]] for k in [tk1;tk2]]
+all(sort(t) .== sort(t2))
 

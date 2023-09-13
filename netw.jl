@@ -298,12 +298,144 @@ function gen_hh_sparse()
 end
 
 
+##
+## generate info needed to simulate ephemeral location-based contacts
+##
+
+## assume that the chance of meeting a neighbor is the same as meeting someone who works in your neighborhood
+##  (otherwise need another parameter to describe the difference)
+
+## group potential encounters by census tract (CBG seems too restrictive)
+
+## home locations; e.g, 
+## cbg A: people 1, 2
+## cbg B: 3, 4
+##
+## work locations; e.g., 
+## cbg A: 1, 3
+## cbg B: 2
+##
+## at home, person 1 could meet: 2, 3
+##          person 2 could meet: 1, 3
+##          person 3 could meet: 4, 2
+##
+## at work, person 1 could meet: 3, 2
+##          person 2 could meet: 3, 4
+##          person 3 could meet: 1, 2
+
+## make a separate matrix for home and work neighborhood contacts?
+##  (# of contact events could be independent, or maybe work is closed)
+## matrix is not symmetrical (local resident you meet while at work probably won't meet you when they're at work)
+## "source" person will be column (because reading by columns is faster in julia)
+
+## home neighborhood contacts
+##  for each location:
+##   for each person who lives there (hh or non-inst gq):
+##    look up everyone else who lives there (hh or gq) + append everyone who works there
+## work neighborhood contacts
+##  for each location:
+##   for each person who works there:
+##    look up everyone else who works there + append everyone who lives there (hh or non-inst gq)
+
+## save memory by not generating the contact matrix
+##  just a matrix of locations (columns) x people (rows)
+##  then simple O1 look-up to get a person's home or work location, and pick from that column
+
+function generate_location_matrices()
+
+    w = dser_path("jlse/company_workers.jlse") ## employers/employees (with work locations)
+    hh = dser_path("jlse/hh.jlse") ## households/residents (with hh locations)
+    cbg_idxs = dser_path("jlse/cbg_idxs.jlse") ## location (cbg) keys used in person/hh keys
+    cbg_idxs = Dict(k=>String31(v) for (k,v) in cbg_idxs)
+    gqs = dser_path("jlse/gqs.jlse") ## group-quarters/residents (with gq locations)
+    ## assume only non-inst GQ residents are available for ephemeral local contacts
+    gq_noninst = filterv(x->x.type==:noninst1864, gqs)
+    ## use the same matrix indices as in the regular contact networks
+    k = dser_path("jlse/adj_mat_keys.jlse")
+    p_idxs = Dict(k .=> eachindex(k))
+
+    ## group potential encounters by census tract (CBG seems too restrictive)
+    hh_tracts = unique(x[1:end-1] for x in values(cbg_idxs))
+    work_tracts = unique(x[3][1:end-1] for x in keys(w))
+    tracts = sort(unique([hh_tracts; work_tracts]))
+
+    ## convert tract codes to integer indices for constructing a matrix
+    loc_idxs = Dict(tracts .=> eachindex(tracts))
+    ## save location indices
+    ser_path("jlse/loc_mat_keys.jlse",loc_idxs)
+
+    ## group individuals by tract code (= cbg code minus last character)
+    ## dataframe provides fast grouping
+    w_df_by_loc = groupby(DataFrame((k[3][1:end-1], v) for (k,v) in w), "1")
+    ## place person-vectors in a dict with integer tract indices as the keys
+    workers_by_loc = Dict(loc_idxs[loc["1"]]=>reduce(vcat, w_df_by_loc[loc][!,"2"]) for loc in keys(w_df_by_loc))
+    ## convert person keys to network matrix indices (same indices as regular contact networks)
+    w_idxs_by_loc = Dict(k=>[p_idxs[i[1:3]] for i in v] for (k,v) in workers_by_loc)
+
+    h_df_by_loc = groupby(DataFrame((cbg_idxs[k[2]][1:end-1], v.people) for (k,v) in hh), "1")
+    hh_ppl_by_loc = Dict(loc_idxs[loc["1"]]=>reduce(vcat, h_df_by_loc[loc][!,"2"]) for loc in keys(h_df_by_loc))
+    hh_idxs_by_loc = Dict(k=>[p_idxs[i] for i in v] for (k,v) in hh_ppl_by_loc)
+
+    gq_df_by_loc = groupby(DataFrame((cbg_idxs[k[2]][1:end-1], v.residents) for (k,v) in gq_noninst), "1")
+    gq_ppl_by_loc = Dict(loc_idxs[loc["1"]]=>reduce(vcat, gq_df_by_loc[loc][!,"2"]) for loc in keys(gq_df_by_loc))
+    gq_idxs_by_loc = Dict(k=>[p_idxs[i] for i in v] for (k,v) in gq_ppl_by_loc)
+
+    ## residential locations include households and non-inst GQs:
+    res_idxs_by_loc = vecmerge(hh_idxs_by_loc, gq_idxs_by_loc)
+
+    ## construct matrices for use in simulation
+    ## columns are locations, rows are people (because we'll be looking up by location)
+    ##  note, currently people have one job max
+    w_loc_contact_mat = sparse(
+        reduce(vcat, values(w_idxs_by_loc)), 
+        reduce(vcat, [fill(k,length(v)) for (k,v) in w_idxs_by_loc]),
+        trues(sum(length.(values(w_idxs_by_loc)))),
+        length(k),length(tracts)
+    )
+
+    res_loc_contact_mat = sparse(
+        reduce(vcat, values(res_idxs_by_loc)), 
+        reduce(vcat, [fill(k,length(v)) for (k,v) in res_idxs_by_loc]),
+        trues(sum(length.(values(res_idxs_by_loc)))),
+        length(k),length(tracts)
+    )
+
+    ser_path("jlse/work_loc_contact_mat.jlse",w_loc_contact_mat)
+    ser_path("jlse/res_loc_contact_mat.jlse",res_loc_contact_mat)
+
+    ## save work and home loc idx for each person idx, for fast lookup
+    ##  note, currently people have one job max
+    w_loc_by_p_idx = Dict(reduce(vcat, [v .=> k for (k,v) in w_idxs_by_loc]))
+    res_loc_by_p_idx = Dict(reduce(vcat, [v .=> k for (k,v) in res_idxs_by_loc]))
+
+    ser_path("jlse/work_loc_lookup.jlse",w_loc_by_p_idx)
+    ser_path("jlse/res_loc_lookup.jlse",res_loc_by_p_idx)
+
+    return nothing
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
 
 ##
+##
+##
 ## fns below not used, keep for testing purposes
+##
+##
 ##
 
 ## returns a list of all groups of people in "institutions" 
