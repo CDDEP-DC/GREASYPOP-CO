@@ -21,16 +21,40 @@ mkpath("pop_export")
 
 println("household adjacency matrix")
 
-m = dser_path("jlse/hh_adj_mat.jlse")
-MatrixMarket.mmwrite(abspath("pop_export/adj_upper_triang_hh_only.mtx"), m)
+m = dser_path("jlse/adj_mat_hh.jlse")
+MatrixMarket.mmwrite(abspath("pop_export/adj_upper_triang_hh.mtx"), m)
 
 d = nothing
 GC.gc()
 
 println("non-household adjacency matrix")
 
-m = dser_path("jlse/adj_mat.jlse")
-MatrixMarket.mmwrite(abspath("pop_export/adj_upper_triang_no_hh.mtx"), m)
+m = dser_path("jlse/adj_mat_non_hh.jlse")
+MatrixMarket.mmwrite(abspath("pop_export/adj_upper_triang_non_hh.mtx"), m)
+
+d = nothing
+GC.gc()
+
+println("workplace only adjacency matrix")
+
+m = dser_path("jlse/adj_mat_wp.jlse")
+MatrixMarket.mmwrite(abspath("pop_export/adj_upper_triang_wp.mtx"), m)
+
+d = nothing
+GC.gc()
+
+println("school only adjacency matrix")
+
+m = dser_path("jlse/adj_mat_sch.jlse")
+MatrixMarket.mmwrite(abspath("pop_export/adj_upper_triang_sch.mtx"), m)
+
+d = nothing
+GC.gc()
+
+println("groups quarters only adjacency matrix")
+
+m = dser_path("jlse/adj_mat_gq.jlse")
+MatrixMarket.mmwrite(abspath("pop_export/adj_upper_triang_gq.mtx"), m)
 
 d = nothing
 GC.gc()

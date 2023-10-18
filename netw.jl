@@ -14,6 +14,8 @@ using Graphs
 #using GraphPlot
 using SparseArrays
 using LinearAlgebra
+using Random
+using Distributions
 
 include("utils.jl")
 include("fileutils.jl")
@@ -173,10 +175,46 @@ function connect_small_world(keyvec::Vector{T}, K::Int, min_N::Int, B::Float64) 
     return [(keyvec[x.src],keyvec[x.dst]) for x in edges(g)]
 end
 
+## as above, but completely connected graph
+function connect_complete(keyvec::Vector{T}) where T<:Any
+    keyvec = unique(keyvec)
+    n = length(keyvec) ## size of group
+    if n < 2 ## nothing to connect
+        return Tuple{T,T}[]
+    else
+        g = complete_graph(n)
+    end
+    ## indices in g correspond to positions in keyvec
+    return [(keyvec[x.src],keyvec[x.dst]) for x in edges(g)]
+end
+
 ## sparse adjacency matrix of bits should be an efficient way to store the network
 ## (also, simple to convert to Graphs.jl graph for analysis)
 ## (also, has good lookup performance, same as hash table)
-function generate_sparse()
+function sp_from_groups(connect_fn, keygroups::Vector{Vector{T}}, p_idxs::Dict{Pkey,Int64}) where T<:Tuple
+    src_idxs = Int64[]
+    dst_idxs = Int64[]
+
+    for keyvec in keygroups 
+        ## connect keys into network, then convert to integer indices
+        for (s_key, d_key) in connect_fn(keyvec)
+            ## key elements 1-3 correspond to a person key
+            push!(src_idxs, p_idxs[s_key[1:3]])
+            push!(dst_idxs, p_idxs[d_key[1:3]])
+        end
+    end
+
+    ## create sparse matrix from indices
+    return sparse([src_idxs;dst_idxs],[dst_idxs;src_idxs],
+                        trues(length(src_idxs)+length(dst_idxs)),
+                        length(p_idxs),length(p_idxs)) ## ensure size is p_idxs by p_idxs
+end
+
+##
+## generate all networks
+##
+function generate_networks()
+
     dConfig = tryJSON("config.json")
     inc_seg_wp = Bool(get(dConfig, "income_segregated_workplaces", 1))
     work_K::Int = get(dConfig, "workplace_K", 8) ## mean degree for wp networks
@@ -185,7 +223,7 @@ function generate_sparse()
     other_B::Float64 = get(dConfig, "netw_B", 0.25) ## beta param for small world networks
     work_assoc_coeff::Float64 = get(dConfig, "income_associativity_coefficient", 0.9) ## group associativity for workplace networks
     sch_assoc_coeff::Float64 = get(dConfig, "school_associativity_coefficient", 0.9) ## group associativity for school networks
-
+    
     ## from workplaces.jl; workers grouped into companies
     ## worker is (person id, hh id, cbg id, income category) -- last one only if income seg wp's were generated
     company_workers = collect(values(dser_path("jlse/company_workers.jlse")))
@@ -194,107 +232,48 @@ function generate_sparse()
     ppl_in_schools = collect(values(read_sch_ppl()))
     ## gq residents and employees 
     ppl_in_gq = collect(values(read_gq_ppl()))
-
+    
+    ## households; assume they're fully connected (and maybe have a higher transmission rate within)
+    hh_ppl = read_hh_ppl()
+    ## save household membership Dict
+    ser_path("jlse/hh_ppl.jlse", hh_ppl)
+    ## just groups as vectors
+    ppl_in_hhs = collect(values(hh_ppl))
+    
     ## each person needs an integer index
     p_idxs, dummy_idxs = person_indices()
     ## save dummies to file; these ppl have workplace but no household; sim should infect them randomly at home
     ser_path("jlse/adj_dummy_keys.jlse", Dict(v=>k for (k,v) in dummy_idxs))
     ## merge people and dummies for network
     merge!(p_idxs, dummy_idxs)
-
-    ## generate network
-    src_idxs = Int64[]
-    dst_idxs = Int64[]
-
-    ## workplaces: using stochastic block model (SBM) network
-    ## so that all results are comparable, use the SBM algo even if there's only one income group in a wp
-    for keyvec in company_workers 
-        ## connect worker keys into network, then convert to integer indices
-        for (s_key, d_key) in connect_SBM(keyvec, work_K, work_K+2, work_assoc_coeff, inc_seg_wp)
-            ## key elements 1-3 correspond to a person key
-            push!(src_idxs, p_idxs[s_key[1:3]])
-            push!(dst_idxs, p_idxs[d_key[1:3]])
-        end
-    end
-
-    ## schools: using SBM, grouped by grade
-    for keyvec in ppl_in_schools 
-        ## connect student and teacher keys into network, then convert to integer indices
-        for (s_key, d_key) in connect_SBM(keyvec, school_K, school_K+2, sch_assoc_coeff, true)
-            ## key elements 1-3 correspond to a person key
-            push!(src_idxs, p_idxs[s_key[1:3]])
-            push!(dst_idxs, p_idxs[d_key[1:3]])
-        end
-    end
-
-    ## other institutions (currently just gq's) : using small-world network
-    for keyvec in ppl_in_gq
-        for (s_key, d_key) in connect_small_world(keyvec, other_K, other_K+2, other_B)
-            ## key elements 1-3 correspond to a person key
-            push!(src_idxs, p_idxs[s_key[1:3]])
-            push!(dst_idxs, p_idxs[d_key[1:3]])
-        end    
-    end
-
-    ## create sparse matrix from indices
-    adj_mat = sparse([src_idxs;dst_idxs],[dst_idxs;src_idxs],
-                        trues(length(src_idxs)+length(dst_idxs)),
-                        length(p_idxs),length(p_idxs)) ## ensure size is p_idxs by p_idxs
-
-    ## matrix must be symmetrical, save space by only storing half
-    ser_path("jlse/adj_mat.jlse",sparse(UpperTriangular(adj_mat)))
-
     ## will need the index keys to look up people
     ser_path("jlse/adj_mat_keys.jlse", first.(sort(collect(p_idxs),by=p->p[2])))
-
-    ## track household membership separately; assume they're fully connected
-    ##  (and maybe have a higher transmission rate within)
-    hh_ppl = read_hh_ppl()
-    ser_path("jlse/hh_ppl.jlse", hh_ppl)
-
+    
+    ## generate network
+    ## workplaces: using stochastic block model (SBM) network
+    ## so that all results are comparable, use the SBM algo even if there's only one income group in a wp
+    adj_wp = sp_from_groups(v->connect_SBM(v, work_K, work_K+2, work_assoc_coeff, inc_seg_wp), company_workers, p_idxs)
+    ## schools: using SBM, grouped by grade
+    adj_sch = sp_from_groups(v->connect_SBM(v, school_K, school_K+2, sch_assoc_coeff, true), ppl_in_schools, p_idxs)
+    ## other institutions (currently just gq's) : using small-world network
+    adj_gq = sp_from_groups(v->connect_small_world(v, other_K, other_K+2, other_B), ppl_in_gq, p_idxs)
+    ## households are fully connected
+    adj_hh = sp_from_groups(v->connect_complete(v), ppl_in_hhs, p_idxs)
+    ## save combined non-hh netw for when those distinctions are not needed
+    adj_mat_non_hh = adj_wp .| adj_sch .| adj_gq
+    
+    ## matrices must be symmetrical, save space by only storing half
+    ser_path("jlse/adj_mat_non_hh.jlse",sparse(UpperTriangular(adj_mat_non_hh)))
+    ser_path("jlse/adj_mat_wp.jlse",sparse(UpperTriangular(adj_wp)))
+    ser_path("jlse/adj_mat_sch.jlse",sparse(UpperTriangular(adj_sch)))
+    ser_path("jlse/adj_mat_gq.jlse",sparse(UpperTriangular(adj_gq)))
+    ser_path("jlse/adj_mat_hh.jlse",sparse(UpperTriangular(adj_hh)))
+    
     ## keep track of people working outside synth area (have no workplace network, sim should infect them randomly at work)
     outside_workers = dser_path("jlse/outside_workers.jlse")
     ser_path("jlse/adj_out_workers.jlse", Dict(p_idxs[only(x)[1:3]] => only(x)[1:3] for x in values(outside_workers)))
     
-   return nothing
-   
-end
-
-function rev_mat_keys()
-    k = dser_path("jlse/adj_mat_keys.jlse")
-    return Dict(k .=> eachindex(k))
-end
-
-## create adjacency matrix for people in households
-## (using same indices created in generate_sparse() above)
-function gen_hh_sparse()
-    ppl_in_hhs = values(dser_path("jlse/hh_ppl.jlse"))
-    p_idxs = rev_mat_keys()
-    src_idxs = Int64[]
-    dst_idxs = Int64[]
-
-    for keyvec in ppl_in_hhs
-        keyvec = unique(keyvec) ## no one should be listed twice in a hh
-        n = length(keyvec) ## size of group
-        if n > 1 ## otherwise, nothing to do
-            ##hhs are fully connected
-            g = complete_graph(n)
-            for x in edges(g)
-                push!(src_idxs, p_idxs[keyvec[x.src]])
-                push!(dst_idxs, p_idxs[keyvec[x.dst]])
-            end
-        end
-    end
-
-    ## create sparse matrix from indices
-    adj_mat = sparse([src_idxs;dst_idxs],[dst_idxs;src_idxs],
-                        trues(length(src_idxs)+length(dst_idxs)),
-                        length(p_idxs),length(p_idxs)) ## force size to be same as overall adj matrix
-
-    ## matrix must be symmetrical, save space by only storing half
-    ser_path("jlse/hh_adj_mat.jlse",sparse(UpperTriangular(adj_mat)))
-
-    return nothing
+    return nothing   
 end
 
 
@@ -387,14 +366,14 @@ function generate_location_matrices()
     ## columns are locations, rows are people (because we'll be looking up by location)
     ##  note, currently people have one job max
     w_loc_contact_mat = sparse(
-        reduce(vcat, values(w_idxs_by_loc)), 
+        reduce(vcat, collect(values(w_idxs_by_loc))), 
         reduce(vcat, [fill(k,length(v)) for (k,v) in w_idxs_by_loc]),
         trues(sum(length.(values(w_idxs_by_loc)))),
         length(k),length(tracts)
     )
 
     res_loc_contact_mat = sparse(
-        reduce(vcat, values(res_idxs_by_loc)), 
+        reduce(vcat, collect(values(res_idxs_by_loc))), 
         reduce(vcat, [fill(k,length(v)) for (k,v) in res_idxs_by_loc]),
         trues(sum(length.(values(res_idxs_by_loc)))),
         length(k),length(tracts)
@@ -416,132 +395,123 @@ end
 
 
 
+## generate a crude holiday contact matrix
+## every household is visited by Poisson(2) other households
+## all workplaces are closed
+## non-inst GQ just stay put for now
+## -- GQ workers will split their time between holiday and their patients/wards, I guess
+## also generate holiday location lookup and location contact matrices
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-##
-##
-##
-## fns below not used, keep for testing purposes
-##
-##
-##
-
-## returns a list of all groups of people in "institutions" 
-##   (excluding households, treating those separately)
-function read_groups()
-    ## gq residents and employees
-    gq_ppl = read_gq_ppl()
-    ## school students and teachers
-    sch_ppl = read_sch_ppl()
-    ## from workplaces.jl:
-    company_workers = dser_path("jlse/company_workers.jlse")
-
-    return [collect(values(gq_ppl)); 
-            collect(values(sch_ppl));
-            collect(values(company_workers))]
+## group each element in v with the subsequent Poisson(L) elements
+function clump_pois(v::Vector{T},L::Int) where T<:Any
+    N = length(v)
+    draws = Int[]
+    s = 0
+    ok = true
+    while ok
+        x = 1 + rand(Poisson(L))
+        s += x
+        if s >= N
+            ok = false
+            push!(draws,N+x-s) ## remainder
+        else
+            push!(draws,x)
+        end
+    end
+    return [v[i] for i in ranges(draws)]    
 end
 
-## generate network as adjacency list (vector of neighbors for each node)
-function generate_network()
-    ## people grouped by workplace, school, group quarters
-    ##  (currently, we don't care what kind of group it is)
-    ## note, workers who live outside synth area have no cbg (or household)
-    ##       -- these become infected randomly at home
-    ppl_in_groups = read_groups()
+function rev_mat_keys()
+    k = dser_path("jlse/adj_mat_keys.jlse")
+    return Dict(k .=> eachindex(k))
+end
 
-    ## small-world netw params: k = 8, B = 0.25 seems ok
-    K = 8
-    B = 0.25
-    ## if less than k+2, assume fully connected
-    min_N = K + 2
+function generate_holiday_contacts()
 
-    ## network is every person's id associated with a vector of their neighbors' ids
-    netw = Dict{Pkey, Vector{Pkey}}()
+    dConfig = tryJSON("config.json")
+    other_K::Int = get(dConfig, "netw_K", 8) ## mean degree for other networks
+    other_B::Float64 = get(dConfig, "netw_B", 0.25) ## beta param for small world networks
 
-    for keyvec in ppl_in_groups
-        keyvec = unique(keyvec) ## e.g., if someone lives and works at the same gq
+    p_idxs = rev_mat_keys()
+    hh_ppl = dser_path("jlse/hh_ppl.jlse")
+    hkeys = shuffle(collect(keys(hh_ppl)))
+    hgroups = clump_pois(hkeys,2)
+    ppl_in_clumps = [reduce(vcat, (hh_ppl[k] for k in g)) for g in hgroups]
+
+    src_idxs = Int64[]
+    dst_idxs = Int64[]
+
+    for keyvec in ppl_in_clumps
+        keyvec = unique(keyvec) ## no one should be listed twice in a hh
         n = length(keyvec) ## size of group
         if n > 1 ## otherwise, nothing to do
-            if n < min_N ## more than one but less than thresh = fully connected
-                g = complete_graph(n)
-            else
-                g = watts_strogatz(n, K, B) ## small-world network
+            ##hhs are fully connected
+            g = complete_graph(n)
+            for x in edges(g)
+                push!(src_idxs, p_idxs[keyvec[x.src]])
+                push!(dst_idxs, p_idxs[keyvec[x.dst]])
             end
-            ## neighbors in g are vector indices
-            ## associate each person's id with a vector of their neighbors' ids
-            d = Dict(keyvec .=> [keyvec[idxs] for idxs in neighVec(g)])
-            ## combine with network so far
-            vecmerge!(netw, d)
+        end
+    end
+
+    ## people in GQs stay put, incl non-inst GQs for now
+    ## gq ppl includes workers, so they will split their time between holiday and their patients/wards, I guess
+    ppl_in_gq = collect(values(read_gq_ppl()))
+
+    ##
+    ## TODO: should really save the GQ network in generate_sparse, so we're not generating a different one here
+    ##
+    for keyvec in ppl_in_gq
+        for (s_key, d_key) in connect_small_world(keyvec, other_K, other_K+2, other_B)
+            ## key elements 1-3 correspond to a person key
+            push!(src_idxs, p_idxs[s_key[1:3]])
+            push!(dst_idxs, p_idxs[d_key[1:3]])
         end    
     end
 
-    ser_path("jlse/netw.jlse",netw)
-
-    ## track household membership separately; assume they're fully connected
-    ##  (and maybe have a higher transmission rate within)
-    #hh_ppl = read_hh_ppl()
-    #ser_path("jlse/hh_ppl.jlse", hh_ppl)
-
-    ## keep track of people working outside synth area
-    ##   (these become infected randomly at work)
-    #outside_workers = dser_path("jlse/outside_workers.jlse")
-
-   return nothing
-end
-
-## generate adjacency list from household membership
-function netw_from_hhs(hppl::Dict{Hkey,Vector{Pkey}})
-    hnet = Dict{Pkey,Vector{Pkey}}()
-    for v::Vector{Pkey} in values(hppl)
-        if length(v) > 1
-            for i in eachindex(v)
-                hnet[v[i]] = v[Not(i)]
-            end
-        end
-    end
-    return hnet
-end
-
-function merge_hh_net()
-    n = dser_path("jlse/netw.jlse")
-    hppl = dser_path("jlse/hh_ppl.jlse")
-    return vecmerge(n, netw_from_hhs(hppl))
-end
-
-function sparse_from_adjdict(d::Dict{Pkey,Vector{Pkey}})
-    ## use only the keys in the dict
-    ## figure out who's not in the graph later
-    p_idxs = Dict(keys(d) .=> 1:length(keys(d)))
-    src_idxs = Int64[]
-    dst_idxs = Int64[]
-    for (k::Pkey,v::Vector{Pkey}) in d
-        for p::Pkey in v
-            push!(src_idxs, p_idxs[k])
-            push!(dst_idxs, p_idxs[p])
-        end
-    end
     ## create sparse matrix from indices
     adj_mat = sparse([src_idxs;dst_idxs],[dst_idxs;src_idxs],
-        trues(length(src_idxs)+length(dst_idxs)),
-        length(p_idxs),length(p_idxs)) ## ensure size is p_idxs by p_idxs
-    ## matrix indices to person keys
-    idx_keys = first.(sort(collect(p_idxs),by=p->p[2]))
+                        trues(length(src_idxs)+length(dst_idxs)),
+                        length(p_idxs),length(p_idxs)) ## force size to be same as overall adj matrix
 
-    return adj_mat, idx_keys
+    ## matrix must be symmetrical, save space by only storing half
+    ser_path("jlse/holiday_adj_mat.jlse",sparse(UpperTriangular(adj_mat)))
+
+    ## also generate holiday location lookup and location contact matrices
+    ##  loc_idxs map census tracts to loc matrix columns, created in generate_location_matrices
+    loc_idxs = dser_path("jlse/loc_mat_keys.jlse")
+    cbg_idxs = Dict(k=>String31(v) for (k,v) in dser_path("jlse/cbg_idxs.jlse"))
+
+    ## the first household's location is the holiday destination; this is random, so locations with more households will have more visitors
+    hh = Dict(first(v)[2:3]=>v for v in ppl_in_clumps)
+    h_df_by_loc = groupby(DataFrame((cbg_idxs[k[2]][1:end-1], v) for (k,v) in hh), "1")
+    hh_ppl_by_loc = Dict(loc_idxs[loc["1"]]=>reduce(vcat, h_df_by_loc[loc][!,"2"]) for loc in keys(h_df_by_loc))
+    hh_idxs_by_loc = Dict(k=>[p_idxs[i] for i in v] for (k,v) in hh_ppl_by_loc)
+
+    ## assume only non-inst GQ residents are available for ephemeral local contacts
+    gq_noninst = filterv(x->x.type==:noninst1864, dser_path("jlse/gqs.jlse"))
+    ## people in GQs stay put for now
+    gq_df_by_loc = groupby(DataFrame((cbg_idxs[k[2]][1:end-1], v.residents) for (k,v) in gq_noninst), "1")
+    gq_ppl_by_loc = Dict(loc_idxs[loc["1"]]=>reduce(vcat, gq_df_by_loc[loc][!,"2"]) for loc in keys(gq_df_by_loc))
+    gq_idxs_by_loc = Dict(k=>[p_idxs[i] for i in v] for (k,v) in gq_ppl_by_loc)
+
+    res_idxs_by_loc = vecmerge(hh_idxs_by_loc, gq_idxs_by_loc)
+
+    ## columns are locations
+    res_loc_contact_mat = sparse(
+        reduce(vcat, collect(values(res_idxs_by_loc))), 
+        reduce(vcat, [fill(k,length(v)) for (k,v) in res_idxs_by_loc]),
+        trues(sum(length.(values(res_idxs_by_loc)))),
+        length(p_idxs),length(loc_idxs)
+    )
+
+    ## save holiday loc idx for each person idx, for fast lookup
+    res_loc_by_p_idx = Dict(reduce(vcat, [v .=> k for (k,v) in res_idxs_by_loc]))
+
+    ser_path("jlse/holiday_loc_contact_mat.jlse",res_loc_contact_mat)
+    ser_path("jlse/holiday_loc_lookup.jlse",res_loc_by_p_idx)
+
+    return nothing
 end
-
-
 
 
