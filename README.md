@@ -49,18 +49,20 @@
 
 
 ## into folder "pums"
-#### PUMS data from https://www.census.gov/programs-surveys/acs/microdata.html
+#### PUMS data from https://www2.census.gov/programs-surveys/acs/data/pums/
 
     psam_h??.* and psam_p??.*
     for each state you want to draw samples from
-
+    (these are provided inside zip files named csv_h??.zip and csv_p??.zip)
 
 ## into folder "geo"
 #### from https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
 
     census tract to PUMA relationship file, *Census_Tract_to*PUMA*.*
+    use the year that has the same census boundaries as your ACS data (boundaries were changed in 2020)
 
-#### from geocorr https://mcdc.missouri.edu/applications/geocorr2018.html
+#### from geocorr https://mcdc.missouri.edu/applications/geocorr2018.html (if using < 2020 ACS)
+#### or https://mcdc.missouri.edu/applications/geocorr2022.html (if using >= 2020 ACS)
 
     puma to county, rename to *puma_to_county*.*
     puma to cbsa, rename to *puma_to_cbsa*.*
@@ -96,6 +98,7 @@
     GIS data: folder Shapefile_SCH
 
 #### from https://nces.ed.gov/ccd/files.asp
+#### (choose "Nonfiscal" and Level = "School" from the dropdown options)
 
     info about grades offered: "Directory" file ccd_sch_029*.csv or .zip
     enrollment data: "Membership" file ccd_sch_052*.csv or .zip
