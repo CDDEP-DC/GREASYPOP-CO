@@ -59,7 +59,7 @@
 #### from https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
 
     census tract to PUMA relationship file, *Census_Tract_to*PUMA*.*
-    use the year that has the same census boundaries as your ACS data (boundaries were changed in 2020)
+    (census boundaries were changed in 2020; choose the year corresponding to ACS year)
 
 #### from geocorr https://mcdc.missouri.edu/applications/geocorr2018.html (if using < 2020 ACS)
 #### or https://mcdc.missouri.edu/applications/geocorr2022.html (if using >= 2020 ACS)
@@ -77,12 +77,12 @@
 
 ## into folder "work"
 #### origin-destination work commute data from https://lehd.ces.census.gov/data/
-#### use the version that has the same census blocks as the ACS data (v. 7 for 2019)
+#### use the version that has the same boundaries as the ACS data (v7 for < 2020; v8 for >= 2020)
 #### use JT01, "primary" jobs (because JT00 counts 2+ jobs for the same individual)
 
     main file for every state in the synth area, named *od_main_JT01*.csv.gz
     aux file for every state in the synth area, named *od_aux_JT01*.csv.gz
-    optionally, aux files for other states to capture commute patterns outside the above state(s)
+    if many people from your synth area commute to other states, also get the *aux* file for those states
 
 
 #### employer size data from https://www.census.gov/programs-surveys/cbp/data/datasets.html
@@ -108,9 +108,10 @@
 ### 2. edit config.json
 
     geos: list of areas to include in the synth pop
-    can be state or county FIPS codes (or any subset of cbg code starting with state FIPS)
+    only CBGs starting with these strings will be included
+    (two chars for state FIPS, 5 chars for county, more for sub-county; any combination is ok)
 
-    inc_adj: current year ADJINC from PUMS data dictionary https://www.census.gov/programs-surveys/acs/microdata.html
+    inc_adj: current year ADJINC from PUMS "Data Dictionary" at https://www.census.gov/programs-surveys/acs/microdata/documentation.html
     inc_cats: arbitrary labels for income categories
     inc_cols: corresponding sets of columns from ACS table B19001
 
