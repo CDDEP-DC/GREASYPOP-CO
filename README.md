@@ -27,7 +27,8 @@
 ### 1. prepare data
 
 ## into folder "census"
-#### create one sub-folder for each US state whose data you want to use (name of sub-folder doesn't matter)
+#### create one sub-folder for each geographic area whose census data you will download; sub-folder names don't matter
+#### (if you're only using data from one US state, make one sub-folder for it)
 #### into each sub-folder, place the following data tables (from [data.census.gov](https://data.census.gov/))
 
     (ACS* = ACS 5yr survey, census block group (CBG) level, from year ####)
