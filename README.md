@@ -26,6 +26,8 @@
 
 ### 1. prepare data
 
+### note: currently only works with data from 2010 - 2019 (format changed in 2020)
+
 ## into folder "census"
 #### create one sub-folder for each geographic area whose census data you will download; sub-folder names don't matter
 #### (if you're only using data from one US state, make one sub-folder for it)
@@ -50,7 +52,8 @@
 
 
 ## into folder "pums"
-#### PUMS data from https://www2.census.gov/programs-surveys/acs/data/pums/
+#### PUMS data for the same 5-yr period as ACS
+#### from https://www2.census.gov/programs-surveys/acs/data/pums/
 
     psam_h??.* and psam_p??.*
     for each state you want to draw samples from
@@ -87,7 +90,7 @@
 
 
 #### employer size data from https://www.census.gov/programs-surveys/cbp/data/datasets.html
-#### 2016 complete county file (more complete than 2019 data)
+#### 2016 complete county file (more complete than later data)
 
     cbp16co.zip
 
