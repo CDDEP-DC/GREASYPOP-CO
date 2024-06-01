@@ -20,6 +20,18 @@ import shutil
 from glob import glob
 import json
 
+import ipfn
+
+## round a pandas Series to integers while preserving sum
+## (using largest-remainder method)
+def lrRound(v):
+    vrnd =  v.apply(np.floor)
+    verr = v - vrnd
+    vrem = np.int64(np.round(sum(v) - sum(vrnd)))
+    vidxs = verr.index[np.flip(np.argsort(verr.values))]
+    for i in range(vrem):
+        vrnd[vidxs[i]] += 1    
+    return vrnd
 
 def read_census(file_list, geos, usecols, columns):
     dfs = []
@@ -58,6 +70,7 @@ def read_pums(prefix, dtypes):
     dfs = [pd.read_csv(f,usecols=list(dtypes.keys()),dtype=dtypes) for f in files]
     return pd.concat(dfs)
 
+## read geography shapefiles
 def read_cbg_geo(geos=None):
     files = glob(os.path.join("geo","tl_*_bg.zip"))
     cbg_geo = pd.concat([gpd.read_file(f) for f in files]).set_index('GEOID')
@@ -69,6 +82,7 @@ def read_cbg_geo(geos=None):
     cbg_geo['cent'] = cbg_geo['geometry'].to_crs(epsg=32618).centroid
     return cbg_geo
 
+## read LODES od data
 def read_work_commute():
     odcols = ['w_geocode','h_geocode','S000','SE01','SE02','SE03']
     odtypes = {'w_geocode':str,'h_geocode':str,'S000':"Int64",'SE01':"Int64",'SE02':"Int64",'SE03':"Int64"}
@@ -154,230 +168,35 @@ def read_sch_data(geos=None):
     return schools
 
 
-
-##
-## ACS, census block group, from data.census.gov
-## put each state in its own folder inside folder named "census"
-##
-def generate_targets(geos, inc_cats, inc_cols):
-    print("reading census data")
-
-    ## family / nonfamily households by size
-    B11016 = read_acs('B11016',geos)
-    ## household types married/cohab/single/alone/own_ch_u18/other_rels/only_nonrels
-    B11012 = read_acs('B11012',geos)
-    ## family households, by # workers _in family_ (not other workers in hh), presence of own_ch_u18, and marriage status
-    B23009 = read_acs('B23009',geos)
-    ## family households, by marriage status and presence of _related_ children in age groups
-    ##  difference between this and "own" children is usually grandchildren of householder
-    ## match to HUPARC
-    B11004 = read_acs('B11004',geos)
-    ## household income
-    B19001 = read_acs('B19001',geos)
-    ## household received food stamps
-    B22010 = read_acs('B22010',geos)
-    # 18+ in households
-    #   If a householder has no spouse or unmarried partner present, they will be shown in 'other relatives' if they have at least one relative present, or in 'other nonrelatives' if no relatives are present.
-    B09021 = read_acs('B09021',geos)
-    ## children under 18 in households by relationship
-    ## note, this is the only cbg-level table that counts all u18 children in households
-    B09018 = read_acs('B09018',geos)
-
-    ## combine m and f single householders
-    for x in ['With own children of the householder under 18 years','No own children of the householder under 18 years']:
-        for y in ['No workers','1 worker','2 workers','3 or more workers']:
-            B23009[':'.join(['B23009',x,'Other family','Unmarried householder',y])] = \
-                B23009[':'.join(['B23009',x,'Other family','Male householder, no spouse present',y])] + \
-                B23009[':'.join(['B23009',x,'Other family','Female householder, no spouse present',y])]
-
-    B11004['B11004:Other family:Unmarried householder:No related children of the householder under 18 years'] = \
-        B11004['B11004:Other family:Male householder, no spouse present:No related children of the householder under 18 years'] + \
-        B11004['B11004:Other family:Female householder, no spouse present:No related children of the householder under 18 years']
-
-    for x in ['Under 6 years only','Under 6 years and 6 to 17 years','6 to 17 years only']:
-        B11004[':'.join(['B11004','Other family:Unmarried householder:With related children of the householder under 18 years',x])] = \
-            B11004[':'.join(['B11004','Other family:Male householder, no spouse present:With related children of the householder under 18 years',x])] + \
-            B11004[':'.join(['B11004','Other family:Female householder, no spouse present:With related children of the householder under 18 years',x])]
-
-    for x in ['Living alone','With own children under 18 years','With relatives, no own children under 18 years','With only nonrelatives present']:
-        B11012[':'.join(['B11012','Single householder',x])] = \
-            B11012[':'.join(['B11012','Female householder, no spouse or partner present',x])] + \
-            B11012[':'.join(['B11012','Male householder, no spouse or partner present',x])]
-
-    ## combine married and cohab households
-    B11012['B11012:Two-partner household:With own children under 18 years'] = \
-        B11012['B11012:Married-couple household:With own children under 18 years'] + \
-        B11012['B11012:Cohabiting couple household:With own children of the householder under 18 years']
-
-    B11012['B11012:Two-partner household:With no own children under 18 years'] = \
-        B11012['B11012:Married-couple household:With no own children under 18 years'] + \
-        B11012['B11012:Cohabiting couple household:With no own children of the householder under 18 years']
-
-    ## combine married and unmarried partners
-    B09021['B09021:Householder living with partner or partner of householder'] = \
-        B09021['B09021:Householder living with spouse or spouse of householder'] + B09021['B09021:Householder living with unmarried partner or unmarried partner of householder']
-
-    for x in ['18 to 34 years','35 to 64 years','65 years and over']:
-        B09021[':'.join(['B09021',x,'Householder living with partner or partner of householder'])] = \
-            B09021[':'.join(['B09021',x,'Householder living with spouse or spouse of householder'])] + \
-            B09021[':'.join(['B09021',x,'Householder living with unmarried partner or unmarried partner of householder'])]
-
-    ## join all census tables together
-    acs_tables = B11016.join([B11012,B23009,B11004,B19001,B22010,B09018,B09021])
-    acs_tables['state'] = acs_tables.index.map(lambda x: x[0:2])
-    acs_tables['county'] = acs_tables.index.map(lambda x: x[0:5])
-
-    ## income data
-    for k,v in zip(inc_cats,inc_cols):
-        acs_tables['B19001:'+k] = acs_tables[['B19001:'+x for x in v]].sum(axis=1)
-
-    ## which census columns to match:
-    target_columns = ['B11016:Family households:2-person household',
-        'B11016:Family households:3-person household',
-        'B11016:Family households:4-person household',
-        'B11016:Family households:5-person household',
-        'B11016:Family households:6-person household',
-        'B11016:Family households:7-or-more person household',
-        'B11016:Nonfamily households:1-person household',
-        'B11016:Nonfamily households:2-person household',
-        'B11016:Nonfamily households:3-person household',
-        'B11016:Nonfamily households:4-person household',
-        'B11016:Nonfamily households:5-person household',
-        'B11016:Nonfamily households:6-person household',
-        'B11016:Nonfamily households:7-or-more person household',
-        ## covers distribution of workers per household reasonably well:
-        'B23009:With own children of the householder under 18 years:Married-couple family:No workers',
-        'B23009:With own children of the householder under 18 years:Married-couple family:1 worker',
-        'B23009:With own children of the householder under 18 years:Married-couple family:2 workers:',
-        'B23009:With own children of the householder under 18 years:Married-couple family:3 or more workers:',
-        'B23009:With own children of the householder under 18 years:Other family:Unmarried householder:No workers',
-        'B23009:With own children of the householder under 18 years:Other family:Unmarried householder:1 worker',
-        'B23009:With own children of the householder under 18 years:Other family:Unmarried householder:2 workers',
-        'B23009:With own children of the householder under 18 years:Other family:Unmarried householder:3 or more workers',
-        'B23009:No own children of the householder under 18 years:Married-couple family:No workers',
-        'B23009:No own children of the householder under 18 years:Married-couple family:1 worker',
-        'B23009:No own children of the householder under 18 years:Married-couple family:2 workers:',
-        'B23009:No own children of the householder under 18 years:Married-couple family:3 or more workers:',
-        'B23009:No own children of the householder under 18 years:Other family:Unmarried householder:No workers',
-        'B23009:No own children of the householder under 18 years:Other family:Unmarried householder:1 worker',
-        'B23009:No own children of the householder under 18 years:Other family:Unmarried householder:2 workers',
-        'B23009:No own children of the householder under 18 years:Other family:Unmarried householder:3 or more workers',
-        # "related" covers almost all children in households
-        'B11004:Married-couple family:With related children of the householder under 18 years:Under 6 years only',
-        'B11004:Married-couple family:With related children of the householder under 18 years:Under 6 years and 6 to 17 years',
-        'B11004:Married-couple family:With related children of the householder under 18 years:6 to 17 years only',
-        'B11004:Married-couple family:No related children of the householder under 18 years',
-        'B11004:Other family:Unmarried householder:With related children of the householder under 18 years:Under 6 years only',
-        'B11004:Other family:Unmarried householder:With related children of the householder under 18 years:Under 6 years and 6 to 17 years',
-        'B11004:Other family:Unmarried householder:With related children of the householder under 18 years:6 to 17 years only',
-        'B11004:Other family:Unmarried householder:No related children of the householder under 18 years',
-        ## covers unmarried partners and married-couple families:
-        'B11012:Two-partner household:With own children under 18 years',
-        'B11012:Two-partner household:With no own children under 18 years',
-        ## various types of non-partner households:
-        'B11012:Single householder:Living alone',
-        'B11012:Single householder:With own children under 18 years',
-        'B11012:Single householder:With relatives, no own children under 18 years',
-        'B11012:Single householder:With only nonrelatives present',
-        'B09018:', ## total children u18 in households, any relationship
-        'B09018:Grandchild', ## under 18 (need this to sample multi-gen households)
-        ## covers all adults in households:
-        'B09021:18 to 34 years:Lives alone',
-        'B09021:18 to 34 years:Householder living with partner or partner of householder',
-        'B09021:18 to 34 years:Child of householder',
-        'B09021:18 to 34 years:Other relatives',
-        'B09021:18 to 34 years:Other nonrelatives',
-        'B09021:35 to 64 years:Lives alone',
-        'B09021:35 to 64 years:Householder living with partner or partner of householder',
-        'B09021:35 to 64 years:Child of householder',
-        'B09021:35 to 64 years:Other relatives',
-        'B09021:35 to 64 years:Other nonrelatives',
-        'B09021:65 years and over:Lives alone',
-        'B09021:65 years and over:Householder living with partner or partner of householder',
-        # sometimes the ACS has weirdly high estimates for this, seems unlikely
-        #'B09021:65 years and over:Child of householder',
-        'B09021:65 years and over:Other relatives',
-        'B09021:65 years and over:Other nonrelatives',
-            *['B19001:'+k for k in inc_cats],
-        'B22010:Household received Food Stamps/SNAP in the past 12 months:']
-
-    ## puma and other geo data for cbg's in the synth area
-    ##
-    ## from https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
-    ##  need census tract to PUMA, filename *Census_Tract_to*PUMA*.*
-    ##
-    ## from geocorr https://mcdc.missouri.edu/applications/geocorr2018.html
-    ## need:
-    ##  cbg to cbsa, rename *cbg_to_cbsa*.*
-    ##  cbg to urban-rural portion, rename to *cbg_urban_rural*.*
-    ##
-    ## put into folder "geo"
-
-    file = glob(os.path.join("geo","*Census_Tract_to*PUMA*.*"))[0]
-    tpum = pd.read_csv(file,dtype=str)
-    tpum['st_puma'] = tpum['STATEFP']+tpum['PUMA5CE']
-    tpum['tract'] = tpum['STATEFP']+tpum['COUNTYFP']+tpum['TRACTCE']
-    ## note, population 0 cbgs are not in geocorr
-    cbg_geo = pd.DataFrame({'Geo':acs_tables.index, 
-                            'tract':acs_tables.index.map(lambda x: x[0:-1]),
-                            'county':acs_tables.index.map(lambda x: x[0:5])})
-    cbg_geo = cbg_geo.merge(tpum, how='left', on='tract').set_index('Geo', verify_integrity=True)
-    file = glob(os.path.join("geo","*cbg_to_cbsa*.*"))[0]
-    cbg_to_cbsa = pd.read_csv(file,dtype=str,skiprows=[1],usecols=["county","tract","bg","cbsa"])
-    cbg_to_cbsa['Geo'] = cbg_to_cbsa['county'] + \
-        cbg_to_cbsa['tract'].map(lambda x: x[0:4]) + cbg_to_cbsa['tract'].map(lambda x: x[5:]) + \
-        cbg_to_cbsa['bg']
-    cbg_to_cbsa.set_index('Geo', inplace=True, verify_integrity=True)
-    file = glob(os.path.join("geo","*cbg_urban_rural*.*"))[0]
-    cbg_ur = pd.read_csv(file,dtype=str,skiprows=[1],usecols=["county","tract","bg","ur","pop10","afact"])
-    cbg_ur['Geo'] = cbg_ur['county'] + \
-        cbg_ur['tract'].map(lambda x: x[0:4]) + cbg_ur['tract'].map(lambda x: x[5:]) + \
-        cbg_ur['bg']
-    cbg_ur = cbg_ur[['Geo','ur','afact']]
-    cbg_ur = cbg_ur.pivot(index='Geo', columns='ur', values='afact').fillna(0)
-    cbg_geo = cbg_geo.join(cbg_to_cbsa['cbsa']).join(cbg_ur)
-    cbg_geo.loc[cbg_geo['cbsa']==" ", 'cbsa'] = "none"
-
-    ##
-    ## a couple of cbgs in the ACS aren't in the tract-to-puma xwalk
-    ## this shouldn't happen, as ACS -2019 uses the 2010 cbg boundaries
-    ## drop them from the synth pop, I guess?
-    ## (they're also missing from the OD commute data and from geocorr2018)
-    ##
-    missing_puma = cbg_geo.index[cbg_geo['st_puma'].isna()]
-    acs_tables = acs_tables[~acs_tables.index.isin(missing_puma)].copy(deep=True)
-
-    ## drop cbgs with less than 20 hh
-    acs20 = acs_tables[acs_tables['B11012:'] > 19]
-    cbg_geo20 = cbg_geo[cbg_geo.index.isin(acs20.index)]
-
-    ## csv of household counts by geography
-    acs_tables['B11012:'].to_csv(os.path.join('processed','hh_counts.csv'))
-    ## csv of target columns from census data
-    acs20[target_columns].to_csv(os.path.join('processed','acs_targets.csv'))
-    ## csv of cbg geo data
-    cbg_geo20.to_csv(os.path.join('processed','cbg_geo.csv'))
-
-    return (acs_tables[['B09021:']], cbg_geo)
-
-
 ##
 ## PUMS data from https://www.census.gov/programs-surveys/acs/microdata.html
 ##
 ## need psam_h##.* and psam_p##.* where ## is state code
 ## put into folder "pums"
-def read_psamp(LODES_cutoff):
+def read_psamp(LODES_cutoff, ind_codes, occ_codes):
 
     ## read individual PUMS data
     psamp_dtype = {'SERIALNO':str,'PUMA':str,'ST':str,'PWGTP':"Int64",
                 'AGEP':"Int64",'SEX':str,'RELSHIPP':str,
                 'WAGP':"Int64",'PINCP':"Int64",'PERNP':"Int64",'COW':str,'POWPUMA':str,'POWSP':str,'JWTRNS':str,
-                'WKL':str,'WKW':str,'WRK':str,'ESR':str,
+                'WKL':str,'WKW':str,'WRK':str,'ESR':str,'NAICSP':str,'SOCP':str,
                 'SCH':str,'SCHG':str,'SCHL':str,
                 'ESP':str,'SFN':str,'SFR':str,
                 'CIT':str,'FER':str,'LANX':str,'DIS':str,'RAC1P':str,'HISP':str,'PAP':"Int64"}
 
     psamp = read_pums("psam_p",psamp_dtype)
+
+    psamp['st_puma'] = psamp['ST'] + psamp['PUMA']
+    psamp['sch_grade'] = psamp['SCHG'].map(dict(zip([str(x).rjust(2,'0') for x in range(1,17)], ['p','k',*[str(x) for x in range(1,13)],'c','g'])))
+
+    ## using 2-digit industry and occupation codes
+    psamp["industry"] = psamp["NAICSP"].fillna("").str.slice(0,2)
+    psamp["occupation"] = psamp["SOCP"].fillna("").str.slice(0,2)
+
+    ## all columns added below are meant to be aggregated as sums
+    ## (to use in matching synth pop to census sums,
+    ##  or when sums are needed for generating workplaces, schools, etc.)
+    pstart_idx = len(psamp.columns)
 
     psamp['age_u6'] = psamp['AGEP'] < 6
     psamp['age_u18'] = psamp['AGEP'] < 18
@@ -402,6 +221,8 @@ def read_psamp(LODES_cutoff):
     psamp['sch_5_8'] = psamp['SCHG'].isin(['07','08','09','10'])
     psamp['sch_9_12'] = psamp['SCHG'].isin(['11','12','13','14'])
     psamp['sch_college'] = psamp['SCHG'] == '15'
+    psamp['sch_public'] = psamp['SCH'] == '2'
+    psamp['sch_private'] = psamp['SCH'] == '3'
     psamp['esp_2p_2w'] = psamp['ESP'] == '1'
     psamp['esp_2p_1w'] = psamp['ESP'].isin(['2','3'])
     psamp['esp_2p_nw'] = psamp['ESP'] == '4'
@@ -414,19 +235,10 @@ def read_psamp(LODES_cutoff):
     psamp['armed_forces'] = psamp['ESR'].isin(['4','5'])
     psamp['in_lf'] = psamp['ESR'].isin(['1','2','3','4','5'])
     psamp['nilf'] = psamp['ESR'] == '6'
-    psamp['work_from_home'] = psamp['JWTRNS'] == '11'
-    ## "worked past year" with missing commute method means temporarily not working?
-    ## psamp['commuter'] = psamp['JWTRNS'].isin(['01','02','03','04','05','06','07','08','09','10','12'])
-    psamp['worked_past_yr'] = psamp['WKL'] == '1'
-    ## however, it looks like # ppl with "worked past yr" is usu greater than # ppl in labor force??
-    ## so... use employment status ESR: 
     psamp['has_job'] = psamp['ESR'].isin(['1','2','4','5'])
+    psamp['work_from_home'] = psamp['has_job'] & (psamp['JWTRNS'] == '11')
     ## and assume a person with a job is a commuter unless they explicitly work from home
     psamp['commuter'] = psamp['has_job'] & ~psamp['work_from_home']
-    ## relate job income to categories in LODES commute statistics
-    ##  WAGP is 0 for business owners, use PERNP? or PINCP?
-    psamp['com_LODES_low'] = psamp['commuter'] & (psamp['PINCP'] < LODES_cutoff)
-    psamp['com_LODES_high'] = psamp['commuter'] & (psamp['PINCP'] >= LODES_cutoff)
     psamp['has_disability'] = psamp['DIS'] == '1'
     psamp['age_u3'] = psamp['AGEP'] < 3
     psamp['age_3_5'] = psamp['age_u6'] & ~psamp['age_u3']
@@ -441,9 +253,13 @@ def read_psamp(LODES_cutoff):
     psamp['race_other_alone'] = psamp['RAC1P'] == '8'
     psamp['race_two_or_more'] = psamp['RAC1P'] == '9'
     psamp['hispanic'] = psamp['HISP'] != '01'
+    psamp['white_non_hispanic'] = psamp['race_white_alone'] & ~psamp['hispanic']
     ## will mark householder race when joined with household table
     for x in ["white_alone","black_alone","amerindian_or_alaskan","asian_alone","pacific_alone","other_alone","two_or_more"]:
         psamp['_'.join(['hh_race',x])] = psamp['hholder'] & psamp['_'.join(['race',x])]
+    ## likewise for ethnicity
+    for x in ["hispanic", "white_non_hispanic"]:
+        psamp['_'.join(['hh',x])] = psamp['hholder'] & psamp[x]
 
     for x in ['u6', '6_11', '12_17', 'u3', '3_5']:
         psamp['_'.join(['own_ch',x])] = psamp['_'.join(['age',x])] & psamp['own_ch_any_age']
@@ -458,15 +274,39 @@ def read_psamp(LODES_cutoff):
         for y in ['age_u6','age_6_17']:
             psamp['_'.join([x,y])] = psamp[x] & psamp[y]
 
+    psamp = psamp.copy() ## defrag the dataframe, lol
+
+    ## relate job income to categories in LODES commute statistics
+    ## only count commuters
+    ## WAGP is 0 for business owners, use PERNP? or PINCP?
+    psamp['com_LODES_low'] = psamp['commuter'] & (psamp['PINCP'] < LODES_cutoff)
+    psamp['com_LODES_high'] = psamp['commuter'] & (psamp['PINCP'] >= LODES_cutoff)
+
+    ## counts of workers in each industry and occ, for matching to census sums
+    for k in ind_codes:
+        psamp['ind_'+k] = psamp['has_job'] & (psamp['industry'].isin(ind_codes[k][0]))
+
+    for k in occ_codes:
+        psamp['occ_'+k] = psamp['has_job'] & (psamp['occupation'].isin(occ_codes[k][0]))
+
+    ## counts of commuters in each ind and occ, for generating workplaces
+    ## (only commuters will be assigned to workplaces)
+    for k in ind_codes:
+        psamp['com_ind_'+k] = psamp['commuter'] & (psamp['industry'].isin(ind_codes[k][0]))
+
+    for k in occ_codes:
+        psamp['com_occ_'+k] = psamp['commuter'] & (psamp['occupation'].isin(occ_codes[k][0]))
+
     ## sum individual column counts in each household
-    pstart_idx = len(psamp_dtype.keys())
     pcols = ['SERIALNO','PWGTP','WAGP','PINCP','PERNP','PAP', *psamp.columns[pstart_idx:]]
     ptotals = psamp[pcols].groupby('SERIALNO',group_keys=True).agg(sum)
 
-    return psamp, ptotals
+    return psamp.copy(), ptotals
 
-
-def read_hsamp_psamp(ADJINC, inc_cats, inc_cols, LODES_cutoff):
+##
+## returns household sums merged with individual sums
+##
+def read_hsamp(ptotals, ADJINC, inc_cats, inc_cols):
 
     ## read household PUMS data
     hsamp_dtype = {'SERIALNO':str,'PUMA':str,'ST':str,'NP':"Int64",'TYPE':str,'CPLT':str,'FES':str,'FS':str,
@@ -558,9 +398,7 @@ def read_hsamp_psamp(ADJINC, inc_cats, inc_cols, LODES_cutoff):
     start_idx = len(hsamp_dtype.keys())
     hsamp[hsamp.columns[start_idx:]] = hsamp[hsamp.columns[start_idx:]].astype('Int64')
 
-    psamp, ptotals = read_psamp(LODES_cutoff)
-
-    ## join households and people by serial#
+    ## join household and individual sums by serial#
     ##   a sum of samples from this table should have columns matching every census table above
     hsamp = hsamp.set_index('SERIALNO').join(ptotals)
 
@@ -587,69 +425,17 @@ def read_hsamp_psamp(ADJINC, inc_cats, inc_cols, LODES_cutoff):
         hsamp['_'.join(['fam_hh', str(n), 'snap_pap'])] = hsamp['_'.join(['fam_hh', str(n)])] * hsamp['snap_or_pap']
     hsamp['fam_hh_7o_snap_pap'] = hsamp['fam_hh_7o'] * hsamp['snap_or_pap']
 
-    return hsamp, psamp
+    return hsamp.copy()
 
 
-def generate_samples(ADJINC, inc_cats, inc_cols, LODES_cutoff):
+def generate_samples(sample_columns, ADJINC, inc_cats, inc_cols, LODES_cutoff, ind_codes, occ_codes, more_summary_cols):
 
     print("reading pums data")
-    hsamp, psamp = read_hsamp_psamp(ADJINC, inc_cats, inc_cols, LODES_cutoff)
-
-    ## generated sample columns that match each of target_columns, in the same order:
-    sample_columns = ['fam_hh_2', 'fam_hh_3', 'fam_hh_4', 'fam_hh_5', 'fam_hh_6', 'fam_hh_7o', 
-        'non_fam_hh_1', 'non_fam_hh_2', 'non_fam_hh_3', 'non_fam_hh_4', 'non_fam_hh_5', 'non_fam_hh_6', 'non_fam_hh_7o', 
-        'w_own_ch_u18_married_fam_work0', 
-        'w_own_ch_u18_married_fam_work1',
-        'w_own_ch_u18_married_fam_work2',
-        'w_own_ch_u18_married_fam_work3o',
-        'w_own_ch_u18_unmar_fam_work0', 
-        'w_own_ch_u18_unmar_fam_work1',
-        'w_own_ch_u18_unmar_fam_work2',
-        'w_own_ch_u18_unmar_fam_work3o',
-        'no_own_ch_u18_married_fam_work0',
-        'no_own_ch_u18_married_fam_work1',
-        'no_own_ch_u18_married_fam_work2',
-        'no_own_ch_u18_married_fam_work3o',
-        'no_own_ch_u18_unmar_fam_work0',
-        'no_own_ch_u18_unmar_fam_work1',
-        'no_own_ch_u18_unmar_fam_work2',
-        'no_own_ch_u18_unmar_fam_work3o', 
-        'fam_married_w_rel_ch_u6_only',
-        'fam_married_w_rel_ch_u6_and_6_17', 
-        'fam_married_w_rel_ch_6_17_only',
-        'fam_married_no_rel_ch_u18',
-        'fam_unmar_w_rel_ch_u6_only', 
-        'fam_unmar_w_rel_ch_u6_and_6_17', 
-        'fam_unmar_w_rel_ch_6_17_only',
-        'fam_unmar_no_rel_ch_u18',
-        'partner_hh_ch_u18', 
-        'partner_hh_no_ch_u18', 
-        'hh_alone',
-        'hh_single_ch_u18', 
-        'hh_single_other_rel', 
-        'hh_nonrel_only',
-        'ch_u18_in_hh',
-        'grandch_u18',
-        'age_18_34_alone',
-        'age_18_34_partner', 
-        'age_18_34_child_of_hh',
-        'age_18_34_other_rel', 
-        'age_18_34_non_rel', 	   
-        'age_35_64_alone', 
-        'age_35_64_partner', 
-        'age_35_64_child_of_hh',
-        'age_35_64_other_rel', 
-        'age_35_64_non_rel', 
-        'age_65o_alone',
-        'age_65o_partner', 
-        # sometimes the ACS has weirdly high estimates for this, seems unlikely
-        #'age_65o_child_of_hh', 
-        'age_65o_other_rel',
-        'age_65o_non_rel',
-        *inc_cats,
-        'snap']
+    psamp, ptotals = read_psamp(LODES_cutoff, ind_codes, occ_codes)
+    hsamp = read_hsamp(ptotals, ADJINC, inc_cats, inc_cols)
 
     ## csv of household samples
+    ## these will be recombined to generate the synth pop
     print("writing samples")
     hsamp[sample_columns].to_csv(os.path.join('processed','census_samples.csv'))
 
@@ -691,40 +477,10 @@ def generate_samples(ADJINC, inc_cats, inc_cols, LODES_cutoff):
     samp_geo.set_index('SERIALNO', inplace=True, verify_integrity=True)
     samp_geo.to_csv(os.path.join('processed','samp_geo.csv'))
 
-    ## summaries of sample data
-    ## will be used in synth pop generation
     print("writing sample summaries")
-
-    p_rawcols = ['SERIALNO','PWGTP','PUMA','ST','RELSHIPP','AGEP','SEX','WAGP','PINCP','PERNP',
-                'COW','JWTRNS','POWPUMA','POWSP','SCH','SCHG','SCHL','WKL','WKW','ESR']
-    p_summcols = [*p_rawcols,'work_from_home','commuter','worked_past_yr','has_job','com_LODES_low','com_LODES_high']
-    p_summary = psamp[p_summcols].reset_index(drop=True).copy(deep=True)
-
-    ## 1 = employer likely not included in OD dataset; 0 = likely included; NA = not working
-    #p_summary['job_listed'] = p_summary['COW'].map({x:1 for x in ['1','2','3','4','7']} | {x:0 for x in ['5','6','8']})
-    #p_summary.loc[~p_summary['worked_past_yr'], 'job_listed'] = np.nan
-    ## 1 = private school; 0 = public; NA = not in school
-    p_summary['sch_private'] = p_summary['SCH'].map({'3':1, '2':0})
-    col_idx = len(p_rawcols)
-    p_summary[p_summary.columns[col_idx:]] = p_summary[p_summary.columns[col_idx:]].astype("Int64")
-    p_summary['sch_grade'] = p_summary['SCHG'].map(dict(zip([str(x).rjust(2,'0') for x in range(1,17)], ['p','k',*[str(x) for x in range(1,13)],'c','g'])))
-    #p_summary['commuter_listed'] = ((p_summary['commuter'] == 1) & (p_summary['job_listed'] == 1)).astype("Int64")
-    #p_summary['commuter_unlist'] = ((p_summary['commuter'] == 1) & (p_summary['job_listed'] == 0)).astype("Int64")
-    #p_summary['wfh_listed'] = ((p_summary['work_from_home'] == 1) & (p_summary['job_listed'] == 1)).astype("Int64")
-    #p_summary['wfh_unlist'] = ((p_summary['work_from_home'] == 1) & (p_summary['job_listed'] == 0)).astype("Int64")
-    p_summary['st_puma'] = p_summary['ST'] + p_summary['PUMA']
-    ## note, POWPUMA usually has a code that refers to a group of pumas
-    #p_summary['job_loc'] = p_summary['POWSP'].map(lambda x: str(x)[1:]) + p_summary['POWPUMA']
-    #p_summary.loc[p_summary['POWPUMA']=='00001','job_loc'] = "" ## job outside US
-
-    p_summary.to_csv(os.path.join('processed','p_samples.csv'))
-
-    ## merge geo data into return val
-    p_summary = p_summary.merge(puma_to_cbsa, how='left', on='st_puma').merge(puma_to_county, how='left', on='st_puma')
-    p_summary['cbsa'] = p_summary['cbsa'].fillna("none")
-
-    hsamp[
-        ['NP','HINCP','NOC','NPF','NRC','PWGTP','WAGP','PINCP','PERNP',
+    ## summary of household PUMS samples
+    ## will be used to look up synth pop totals, after sample households are selected
+    h_summcols = ['NP','HINCP','NOC','NPF','NRC','PWGTP','WAGP','PINCP','PERNP',
         'age_u6', 'age_u18', 'age_6_11', 'age_6_17',
         'age_12_17', 'own_ch_any_age', 'own_ch_u18', 'hholder', 'partner',
         'child_of_hh', 'other_rel', 'non_rel', 'ch_u18_in_hh',
@@ -732,22 +488,85 @@ def generate_samples(ADJINC, inc_cats, inc_cols, LODES_cutoff):
         'sch_1_4', 'sch_5_8', 'sch_9_12', 'sch_college', 'esp_2p_2w',
         'esp_2p_1w', 'esp_2p_nw', 'esp_1p_1w', 'esp_1p_nw', 'male',
         'female', 'employed', 'unemployed', 'armed_forces', 'in_lf',
-        'nilf', 'work_from_home', 'commuter', 'worked_past_yr', 'has_job', 'com_LODES_low', 'com_LODES_high',
+        'nilf', 'work_from_home', 'commuter', 'has_job',
         'own_ch_u6', 'own_ch_6_11', 'own_ch_12_17',
         'esp_2p_2w_age_u6', 'esp_2p_2w_age_6_17', 'esp_2p_1w_age_u6',
         'esp_2p_1w_age_6_17', 'esp_2p_nw_age_u6', 'esp_2p_nw_age_6_17',
-        'esp_1p_1w_age_u6', 'esp_1p_1w_age_6_17', 'esp_1p_nw_age_u6',
-        'esp_1p_nw_age_6_17']
-        ].to_csv(os.path.join('processed','hh_samples.csv'))
+        'esp_1p_1w_age_u6', 'esp_1p_1w_age_6_17', 'esp_1p_nw_age_u6', 'esp_1p_nw_age_6_17',
+        ## commuter sums by household, for generating workplaces:
+        'com_LODES_low', 'com_LODES_high',
+        *['com_ind_'+k for k in ind_codes.keys()],
+        *['com_occ_'+k for k in occ_codes.keys()]]
+    hsamp[h_summcols].to_csv(os.path.join('processed','hh_samples.csv'))
+
+    ## summary of individual samples
+    ## will be used to look up attributes of individuals selected for synth pop
+    ## and for generating group quarters
+    p_rawcols = ['SERIALNO','PWGTP','PUMA','ST','RELSHIPP','AGEP','SEX','WAGP','PINCP','PERNP',
+                'COW','JWTRNS','POWPUMA','POWSP','SCH','SCHG','SCHL','WKL','WKW','ESR','NAICSP','SOCP',
+                'sch_grade','st_puma']
+    p_summcols = [*p_rawcols,'work_from_home','commuter','has_job','com_LODES_low','com_LODES_high','armed_forces',
+                  ## all employed, by industry and occ (will be used to generate GQ employment data)
+                  *['ind_'+k for k in ind_codes.keys()], *['occ_'+k for k in occ_codes.keys()],
+                  *more_summary_cols]
+    p_summary = psamp[p_summcols].reset_index(drop=True).copy(deep=True)
+    col_idx = len(p_rawcols)
+    p_summary[p_summary.columns[col_idx:]] = p_summary[p_summary.columns[col_idx:]].astype("Int64")
+    p_summary.to_csv(os.path.join('processed','p_samples.csv'))
+
+    ## merge geo data into return val
+    p_summary = p_summary.merge(puma_to_cbsa, how='left', on='st_puma').merge(puma_to_county, how='left', on='st_puma')
+    p_summary['cbsa'] = p_summary['cbsa'].fillna("none")
 
     return p_summary
+
+
+## puma and other geo data for cbg's in the synth area
+##
+## from https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
+##  need census tract to PUMA, filename *Census_Tract_to*PUMA*.*
+##
+## from geocorr https://mcdc.missouri.edu/applications/geocorr2018.html
+## need:
+##  cbg to cbsa, rename *cbg_to_cbsa*.*
+##  cbg to urban-rural portion, rename to *cbg_urban_rural*.*
+##
+## put into folder "geo"
+def read_geo_xwalk(cbg_index):
+
+    file = glob(os.path.join("geo","*Census_Tract_to*PUMA*.*"))[0]
+    tpum = pd.read_csv(file,dtype=str)
+    tpum['st_puma'] = tpum['STATEFP']+tpum['PUMA5CE']
+    tpum['tract'] = tpum['STATEFP']+tpum['COUNTYFP']+tpum['TRACTCE']
+    ## note, population 0 cbgs are not in geocorr
+    cbg_geo = pd.DataFrame({'Geo':cbg_index, 
+                            'tract':cbg_index.map(lambda x: x[0:-1]),
+                            'county':cbg_index.map(lambda x: x[0:5])})
+    cbg_geo = cbg_geo.merge(tpum, how='left', on='tract').set_index('Geo', verify_integrity=True)
+    file = glob(os.path.join("geo","*cbg_to_cbsa*.*"))[0]
+    cbg_to_cbsa = pd.read_csv(file,dtype=str,skiprows=[1],usecols=["county","tract","bg","cbsa"])
+    cbg_to_cbsa['Geo'] = cbg_to_cbsa['county'] + \
+        cbg_to_cbsa['tract'].map(lambda x: x[0:4]) + cbg_to_cbsa['tract'].map(lambda x: x[5:]) + \
+        cbg_to_cbsa['bg']
+    cbg_to_cbsa.set_index('Geo', inplace=True, verify_integrity=True)
+    file = glob(os.path.join("geo","*cbg_urban_rural*.*"))[0]
+    cbg_ur = pd.read_csv(file,dtype=str,skiprows=[1],usecols=["county","tract","bg","ur","pop10","afact"])
+    cbg_ur['Geo'] = cbg_ur['county'] + \
+        cbg_ur['tract'].map(lambda x: x[0:4]) + cbg_ur['tract'].map(lambda x: x[5:]) + \
+        cbg_ur['bg']
+    cbg_ur = cbg_ur[['Geo','ur','afact']]
+    cbg_ur = cbg_ur.pivot(index='Geo', columns='ur', values='afact').fillna(0)
+    cbg_geo = cbg_geo.join(cbg_to_cbsa['cbsa']).join(cbg_ur)
+    cbg_geo.loc[cbg_geo['cbsa']==" ", 'cbsa'] = "none"
+
+    return cbg_geo
 
 
 ##
 ## group quarters
 ##
 ## group quarters by age groups, based on ACS
-def generate_gq(geos, acs_summary, cbg_geo, p_summary):
+def generate_gq(geos, df_adults_in_hh, geo_xwalk, p_summary, ind_codes, occ_codes):
 
     print("generating GQ data")
 
@@ -758,32 +577,31 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
     ## adults 65+ incl gq
     B09020 = read_acs('B09020',geos)
 
-    n_total = B01001['B01001:']
-    under18_total = B01001['B01001:Male:Under 5 years'] + B01001['B01001:Male:5 to 9 years'] \
+    B01001['n_total'] = B01001['B01001:']
+    B01001['under18_total'] = B01001['B01001:Male:Under 5 years'] + B01001['B01001:Male:5 to 9 years'] \
         + B01001['B01001:Male:10 to 14 years'] + B01001['B01001:Male:15 to 17 years'] \
         + B01001['B01001:Female:Under 5 years'] + B01001['B01001:Female:5 to 9 years'] \
         + B01001['B01001:Female:10 to 14 years'] + B01001['B01001:Female:15 to 17 years']
-    adult_total = n_total - under18_total
+    B01001['adult_total'] = B01001['n_total'] - B01001['under18_total']
 
-    adult_total_in_hh = acs_summary['B09021:']
-    n_total_in_hh = B09019['B09019:In households:']
-    n_group_quarters = B09019['B09019:In group quarters']
-    adult_65o_in_household = B09020['B09020:In households:']
-    adult_65o_in_group_quarters = B09020['B09020:In group quarters']
+    df_gq = B01001.join(df_adults_in_hh['B09021:'].rename('adult_total_in_hh')) \
+                .join(B09019['B09019:In households:'].rename('n_total_in_hh')) \
+                .join(B09019['B09019:In group quarters'].rename('n_group_quarters')) \
+                .join(B09020['B09020:In households:'].rename('adult_65o_in_household')) \
+                .join(B09020['B09020:In group quarters'].rename('adult_65o_in_group_quarters'))
 
-    adult_in_group_quarters = adult_total - adult_total_in_hh
-    adult_18_64_group_quarters = adult_in_group_quarters - adult_65o_in_group_quarters
-    u18_group_quarters = n_group_quarters - adult_in_group_quarters
-
-    df_gq = pd.DataFrame({'group quarters:':n_group_quarters, 'group quarters:under 18':u18_group_quarters,
-        'group quarters:18 to 64':adult_18_64_group_quarters, 'group quarters:65 and over':adult_65o_in_group_quarters})
+    df_gq['adult_in_group_quarters'] = df_gq['adult_total'] - df_gq['adult_total_in_hh']
+    df_gq['group quarters:'] = df_gq['n_group_quarters']
+    df_gq['group quarters:under 18'] = df_gq['n_group_quarters'] - df_gq['adult_in_group_quarters']
+    df_gq['group quarters:18 to 64'] = df_gq['adult_in_group_quarters'] - df_gq['adult_65o_in_group_quarters']
+    df_gq['group quarters:65 and over'] = df_gq['adult_65o_in_group_quarters']
 
     ## ignore cbgs with less than 20 in gq's
-    df_gq = df_gq[df_gq['group quarters:'] > 19]
+    df_gq = df_gq.loc[df_gq['group quarters:'] > 19, 
+            ['group quarters:', 'group quarters:under 18', 'group quarters:18 to 64', 'group quarters:65 and over']].copy(deep=True)
 
-    ## from 2010 census
-    ##   institutionalized vs non-inst gq by age
-    P32 = read_decennial('P32', geos)
+    ## from previous decennial census
+    ##   institutionalized vs non-inst gq by age (not available in ACS)
     P43 = read_decennial('P43', geos)
 
     P43 = P43.loc[P43['P43']>0 ,['P43','P43:Male:Under 18 years',
@@ -792,35 +610,20 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
     'P43:Male:18 to 64 years',
     'P43:Male:18 to 64 years:Institutionalized population (101-106, 201-203, 301, 401-405)',
     'P43:Male:18 to 64 years:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904)',
+    'P43:Male:18 to 64 years:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904):Military quarters (601-602)',
     'P43:Male:65 years and over',
     'P43:Male:65 years and over:Institutionalized population (101-106, 201-203, 301, 401-405)',
     'P43:Male:65 years and over:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904)',
     'P43:Female', 'P43:Female:Under 18 years',
     'P43:Female:Under 18 years:Institutionalized population (101-106, 201-203, 301, 401-405)',
     'P43:Female:Under 18 years:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904)',
+    'P43:Female:18 to 64 years:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904):Military quarters (601-602)',
     'P43:Female:18 to 64 years',
     'P43:Female:18 to 64 years:Institutionalized population (101-106, 201-203, 301, 401-405)',
     'P43:Female:18 to 64 years:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904)',
     'P43:Female:65 years and over',
     'P43:Female:65 years and over:Institutionalized population (101-106, 201-203, 301, 401-405)',
     'P43:Female:65 years and over:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904)']].copy(deep=True)
-    P32 = P32.loc[P32['P32:In group quarters']>0 ,['P32:In group quarters',
-    'P32:In group quarters:Institutionalized population',
-    'P32:In group quarters:Institutionalized population:Under 3 years',
-    'P32:In group quarters:Institutionalized population:3 and 4 years',
-    'P32:In group quarters:Institutionalized population:5 years',
-    'P32:In group quarters:Institutionalized population:6 to 11 years',
-    'P32:In group quarters:Institutionalized population:12 and 13 years',
-    'P32:In group quarters:Institutionalized population:14 years',
-    'P32:In group quarters:Institutionalized population:15 to 17 years',
-    'P32:In group quarters:Noninstitutionalized population',
-    'P32:In group quarters:Noninstitutionalized population:Under 3 years',
-    'P32:In group quarters:Noninstitutionalized population:3 and 4 years',
-    'P32:In group quarters:Noninstitutionalized population:5 years',
-    'P32:In group quarters:Noninstitutionalized population:6 to 11 years',
-    'P32:In group quarters:Noninstitutionalized population:12 and 13 years',
-    'P32:In group quarters:Noninstitutionalized population:14 years',
-    'P32:In group quarters:Noninstitutionalized population:15 to 17 years']].copy(deep=True)
 
     P43['u18_gq'] = P43['P43:Male:Under 18 years'] + P43['P43:Female:Under 18 years']
     P43['18_64_gq'] = P43['P43:Male:18 to 64 years'] + P43['P43:Female:18 to 64 years']
@@ -835,65 +638,91 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
         P43['P43:Female:18 to 64 years:Institutionalized population (101-106, 201-203, 301, 401-405)'])
     P43['18_64_noninst'] = (P43['P43:Male:18 to 64 years:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904)'] +
         P43['P43:Female:18 to 64 years:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904)'])
+    P43['18_64_noninst_mil'] = (P43['P43:Male:18 to 64 years:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904):Military quarters (601-602)'] +
+        P43['P43:Female:18 to 64 years:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904):Military quarters (601-602)'])
+    P43['18_64_noninst_civil'] = (P43['18_64_noninst'] - P43['18_64_noninst_mil'])
 
     P43['65o_inst'] = (P43['P43:Male:65 years and over:Institutionalized population (101-106, 201-203, 301, 401-405)'] +
         P43['P43:Female:65 years and over:Institutionalized population (101-106, 201-203, 301, 401-405)'])
     P43['65o_noninst'] = (P43['P43:Male:65 years and over:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904)'] +
         P43['P43:Female:65 years and over:Noninstitutionalized population (501, 601-602, 701-702, 704, 706, 801-802, 900-901, 903-904)'])
 
-    ## will use 2010 proportions with ACS counts
+    ## will use previous census proportions with ACS counts
     census_gq_u18 = P43.loc[P43['u18_gq']>0, ['u18_gq','u18_inst','u18_noninst']].copy(deep=True)
-    census_gq_18_64 = P43.loc[P43['18_64_gq']>0, ['18_64_gq','18_64_inst','18_64_noninst']].copy(deep=True)
+    census_gq_18_64 = P43.loc[P43['18_64_gq']>0, ['18_64_gq','18_64_inst','18_64_noninst','18_64_noninst_civil','18_64_noninst_mil']].copy(deep=True)
     census_gq_65o = P43.loc[P43['65o_gq']>0, ['65o_gq','65o_inst','65o_noninst']].copy(deep=True)
     census_gq_u18['p_u18_inst'] = census_gq_u18['u18_inst'] / census_gq_u18['u18_gq']
     census_gq_18_64['p_18_64_inst'] = census_gq_18_64['18_64_inst'] / census_gq_18_64['18_64_gq']
+    census_gq_18_64['p_18_64_noninst_civil'] = census_gq_18_64['18_64_noninst_civil'] / census_gq_18_64['18_64_gq']
+    census_gq_18_64['p_18_64_noninst_mil'] = census_gq_18_64['18_64_noninst_mil'] / census_gq_18_64['18_64_gq']
     census_gq_65o['p_65o_inst'] = census_gq_65o['65o_inst'] / census_gq_65o['65o_gq']
 
     df_gq = df_gq.join([census_gq_u18,census_gq_18_64,census_gq_65o])
+
+    ## if census is missing data for CBGs where ACS reports GQ residents,
+    ##   assume -18 and 65+ are inst, assume 18-64 are non-inst civilian
+    for c in ["p_u18_inst","p_18_64_noninst_civil","p_65o_inst"]:
+        df_gq[c] = df_gq[c].fillna(1.0)
+    for c in ["p_18_64_inst","p_18_64_noninst_mil"]:
+        df_gq[c] = df_gq[c].fillna(0.0)
 
     ## from puma samples, employment data on people in non-inst group quarters
     ##  (not avail in census data)
     ##
     ## assume only 18-64 are working (not true, but close enough)
     ##
-    samp_noninst = p_summary.loc[p_summary['RELSHIPP'].isin(['38']) 
+    ## PUMS doesn't distinguish btw civilian and military group quarters
+    ## use employment status code (ESR):
+    ##  assume that everyone in military GQ is employed in armed forces
+    ##  and anyone in GQ not employed by armed forces is in civilian GQ
+    s_noninst_civ = p_summary.loc[p_summary['RELSHIPP'].isin(['38']) 
+                & (p_summary['armed_forces'] != 1)
                 & (p_summary['AGEP'] > 17) 
                 & (p_summary['AGEP'] < 65)].copy(deep=True)
 
+    ## note, employment stats generated here still need to be reconciled with census data in next step
+    cols = ['commuter','work_from_home','com_LODES_low','com_LODES_high',
+            *['ind_'+k for k in ind_codes.keys()], *['occ_'+k for k in occ_codes.keys()]]
+
+    pcols = [c+'_p|ninst1864civ' for c in cols]
+
     ## PWGTP = individual "weight" according to the pums sample data
-    #samp_noninst['com_list_wt'] = samp_noninst['commuter_listed'] * samp_noninst['PWGTP']
-    #samp_noninst['com_ulist_wt'] = samp_noninst['commuter_unlist'] * samp_noninst['PWGTP']
-    #samp_noninst['wfh_list_wt'] = samp_noninst['wfh_listed'] * samp_noninst['PWGTP']
-    #samp_noninst['wfh_ulist_wt'] = samp_noninst['wfh_unlist'] * samp_noninst['PWGTP']
-    #samp_noninst['com_wt'] = samp_noninst['com_list_wt'] + samp_noninst['com_ulist_wt']
-    samp_noninst['com_wt'] = samp_noninst['commuter'] * samp_noninst['PWGTP']
-    #samp_noninst['wfh_wt'] = samp_noninst['wfh_list_wt'] + samp_noninst['wfh_ulist_wt']
-    samp_noninst['wfh_wt'] = samp_noninst['work_from_home'] * samp_noninst['PWGTP']
-    #samp_noninst['list_wt'] = samp_noninst['com_list_wt'] + samp_noninst['wfh_list_wt']
-    #samp_noninst['ulist_wt'] = samp_noninst['com_ulist_wt'] + samp_noninst['wfh_ulist_wt']
-    samp_noninst['working_wt'] = samp_noninst['com_wt'] + samp_noninst['wfh_wt']
-    samp_noninst['com_low_wt'] = samp_noninst['com_LODES_low'] * samp_noninst['PWGTP']
-    samp_noninst['com_high_wt'] = samp_noninst['com_LODES_high'] * samp_noninst['PWGTP']
+    for c,pc in zip(cols,pcols):
+        s_noninst_civ[pc] = s_noninst_civ[c] * s_noninst_civ['PWGTP']
 
-    agg_dict = {'PWGTP':sum,
-                #'com_list_wt':sum,'com_ulist_wt':sum,'wfh_list_wt':sum,'wfh_ulist_wt':sum,
-                'com_wt':sum,'wfh_wt':sum,'working_wt':sum,'com_low_wt':sum,'com_high_wt':sum
-                }
-    ## use county stats to get enough samples
-    samp_noninst_by_county = samp_noninst.groupby('county',group_keys=True).agg(agg_dict)
-    p_noninst_by_county = samp_noninst_by_county.apply(lambda x: x/samp_noninst_by_county['PWGTP'], axis=0)
+    s_noninst_mil = p_summary.loc[p_summary['RELSHIPP'].isin(['38']) 
+                & (p_summary['armed_forces'] == 1)
+                & (p_summary['AGEP'] > 17) 
+                & (p_summary['AGEP'] < 65)].copy(deep=True)
 
+    cols_mil = [c+'_p|milGQ' for c in cols]
+
+    for c,pc in zip(cols,cols_mil):
+        s_noninst_mil[pc] = s_noninst_mil[c] * s_noninst_mil['PWGTP']
+
+    ## not many GQ residents represented in PUMS samples
+    ## not enough to capture geographic variation in GQ employment stats
+    ## assume that by state, all GQs of the same type (civ, mil) have the same emp stats
+    agg_dict = {x:sum for x in ['PWGTP',*pcols]}
+    agg_civ = s_noninst_civ.groupby('ST',group_keys=True).agg(agg_dict)
+    p_agg_civ = agg_civ.apply(lambda x: x/agg_civ['PWGTP'], axis=0).drop(columns=['PWGTP'])
+
+    agg_dict_mil = {x:sum for x in ['PWGTP',*cols_mil]}
+    agg_mil = s_noninst_mil.groupby('ST',group_keys=True).agg(agg_dict_mil)
+    p_agg_mil = agg_mil.apply(lambda x: x/agg_mil['PWGTP'], axis=0).drop(columns=['PWGTP'])
+
+    ## aggregating by state, not county
     ## for each cbg, use its puma's main county, instead of the cbg's actual county (because samples are by puma)
     ## p_summary has each puma mapped to its main county:
-    puma_to_county = p_summary.groupby('st_puma',group_keys=True).agg({'county':(lambda x: x.unique()[0])})
+    #puma_to_county = p_summary.groupby('st_puma',group_keys=True).agg({'county':(lambda x: x.unique()[0])})
     ##  (pandas merge() drops the index for some reason, hence the reset_index + set_index trick)
-    df_gq = df_gq.join(cbg_geo['st_puma']).reset_index().merge(puma_to_county,how='left',on='st_puma').set_index('Geo')
-    df_gq = df_gq.merge(p_noninst_by_county, how='left', left_on="county", right_index=True)
+    #df_gq = df_gq.join(geo_xwalk['st_puma']).reset_index().merge(puma_to_county,how='left',on='st_puma').set_index('Geo')
+    #df_gq = df_gq.merge(p_noninst_by_county, how='left', left_on="county", right_index=True)
+    df_gq = df_gq.join(geo_xwalk["STATEFP"]).merge(p_agg_civ, how='left', left_on="STATEFP", right_index=True).merge(p_agg_mil, how='left', left_on="STATEFP", right_index=True)
+
     keep_cols = ['group quarters:', 'group quarters:under 18', 'group quarters:18 to 64', 'group quarters:65 and over', 
-        'p_u18_inst', 'p_18_64_inst', 'p_65o_inst', 
-        #'com_list_wt', 'com_ulist_wt', 'wfh_list_wt', 'wfh_ulist_wt'
-        'com_wt','wfh_wt','working_wt','com_low_wt','com_high_wt'
-        ]
+        'p_u18_inst', 'p_18_64_inst', 'p_65o_inst', 'p_18_64_noninst_civil', 'p_18_64_noninst_mil',
+        *pcols, *cols_mil]
 
     ##
     ## a couple of cbgs in the ACS aren't in the tract-to-puma xwalk
@@ -901,17 +730,347 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
     ## drop them from the synth pop, I guess?
     ## (they're also missing from the OD commute data and from geocorr2018)
     ##
-    missing_puma = cbg_geo.index[cbg_geo['st_puma'].isna()]
+    missing_puma = geo_xwalk.index[geo_xwalk['st_puma'].isna()]
     keep_rows = ~df_gq.index.isin(missing_puma)
 
-    df_gq = df_gq.loc[keep_rows, keep_cols].rename(columns={
-                        #'com_list_wt':'p_com_list|noninst1864','com_ulist_wt':'p_com_ulist|noninst1864',
-                        #'wfh_list_wt':'p_wfh_list|noninst1864','wfh_ulist_wt':'p_wfh_ulist|noninst1864'
-                        'com_wt':'p_com|noninst1864','wfh_wt':'p_wfh|noninst1864','working_wt':'p_working|noninst1864',
-                        'com_low_wt':'p_com_low|noninst1864','com_high_wt':'p_com_high|noninst1864'
-                        }).copy(deep=True)
+    df_gq = df_gq.loc[keep_rows, keep_cols].copy(deep=True)
+    df_gq.round(6).to_csv(os.path.join('processed','group_quarters.csv'))
+    return df_gq
 
-    df_gq.to_csv(os.path.join('processed','group_quarters.csv'))
+
+def read_ind_df(geos, ind_codes):
+    ## industries
+    C24030 = read_acs("C24030",geos)
+    ## civilian vs military workforce
+    B23025 = read_acs("B23025",geos)
+
+    ## join male and female counts
+    ind_names = C24030.columns[1:].map(lambda x: ':'.join(x.split(":")[2:])).unique()
+    for x in ind_names:
+        C24030["C24030:All:"+x] = C24030["C24030:Male:"+x] + C24030["C24030:Female:"+x]
+
+    C24030 = C24030.join(B23025['B23025:In labor force:Armed Forces'])
+    C24030["C24030:All:MIL"] = C24030['B23025:In labor force:Armed Forces']
+    C24030["C24030:All:Civilian"] = C24030["C24030:All:"]
+    C24030["C24030:All:"] = C24030["C24030:All:"] + C24030["C24030:All:MIL"]
+    C24030["C24030:"] = C24030["C24030:All:"]
+
+    ## industry code 92 = public admin and mil
+    C24030["C24030:All:ADM_MIL"] = C24030["C24030:All:Public administration"] + C24030["C24030:All:MIL"]
+
+    ind_df = C24030[["C24030:"]].copy(deep=True)
+    for k in ind_codes:
+        ind_df = ind_df.join(C24030['C24030:All:'+ind_codes[k][1]].rename('C24030:'+k))
+
+    return ind_df
+
+
+def read_occ_df(geos, occ_codes):
+    ## occupations
+    C24010 = read_acs("C24010",geos)
+    ## civilian vs military workforce
+    B23025 = read_acs("B23025",geos)
+
+    ## join male and female counts
+    occ_names = C24010.columns[1:].map(lambda x: ':'.join(x.split(":")[2:])).unique()
+    for x in occ_names:
+        C24010["C24010:All:"+x] = C24010["C24010:Male:"+x] + C24010["C24010:Female:"+x]
+
+    ## add military to industries and occupations
+    C24010 = C24010.join(B23025['B23025:In labor force:Armed Forces'])
+    C24010["C24010:All:MIL"] = C24010['B23025:In labor force:Armed Forces']
+    C24010["C24010:All:Civilian"] = C24010["C24010:All:"]
+    C24010["C24010:All:"] = C24010["C24010:All:"] + C24010["C24010:All:MIL"]
+    C24010["C24010:"] = C24010["C24010:All:"]
+
+    ## pull education and health out of the mbsa category
+    C24010['C24010:All:EDU'] = C24010['C24010:All:Management, business, science, and arts occupations:Education, legal, community service, arts, and media occupations:Educational instruction, and library occupations']
+    C24010['C24010:All:MED'] = C24010['C24010:All:Management, business, science, and arts occupations:Healthcare practitioners and technical occupations:']
+    C24010['C24010:All:MBSA'] = C24010['C24010:All:Management, business, science, and arts occupations:'] - (C24010['C24010:All:EDU'] + C24010['C24010:All:MED'])
+
+    occ_df = C24010[["C24010:"]].copy(deep=True)
+    for k in occ_codes:
+        occ_df = occ_df.join(C24010['C24010:All:'+occ_codes[k][1]].rename('C24010:'+k))
+
+    return occ_df
+
+
+##
+## ACS, census block group, from data.census.gov
+## put each state in its own folder inside folder named "census"
+##
+def generate_targets(target_columns, geos, geo_xwalk, gq_stats, inc_cats, inc_cols, ind_codes, occ_codes):
+    print("reading census data")
+
+    ## family / nonfamily households by size
+    B11016 = read_acs('B11016',geos)
+    ## household types married/cohab/single/alone/own_ch_u18/other_rels/only_nonrels
+    B11012 = read_acs('B11012',geos)
+    ## family households, by # workers _in family_ (not other workers in hh), presence of own_ch_u18, and marriage status
+    B23009 = read_acs('B23009',geos)
+    ## family households, by marriage status and presence of _related_ children in age groups
+    ##  difference between this and "own" children is usually grandchildren of householder
+    ## match to HUPARC
+    B11004 = read_acs('B11004',geos)
+    ## household income
+    B19001 = read_acs('B19001',geos)
+    ## household received food stamps
+    B22010 = read_acs('B22010',geos)
+    # 18+ in households
+    #   If a householder has no spouse or unmarried partner present, they will be shown in 'other relatives' if they have at least one relative present, or in 'other nonrelatives' if no relatives are present.
+    B09021 = read_acs('B09021',geos)
+    ## children under 18 in households by relationship
+    ## note, this is the only cbg-level table that counts all u18 children in households
+    B09018 = read_acs('B09018',geos)
+    ## civilian vs military workforce
+    B23025 = read_acs("B23025",geos)
+    ## everyone, incl group quarters
+    B09019 = read_acs('B09019',geos)
+    ## race and ethnicity
+    B11001H = read_acs("B11001H",geos) ## white non-hispanic householders
+    B11001I = read_acs("B11001I",geos) ## hispanic householders
+    B25006 = read_acs("B25006",geos) ## householders by race
+    race_eth = B25006[["B25006:Householder who is Black or African American alone"]] \
+        .join(B11001H["B11001H:"].rename("B11001H:Householder white non-hispanic")) \
+        .join(B11001I["B11001I:"].rename("B11001I:Householder hispanic any race"))
+
+    ## combine m and f single householders
+    for x in ['With own children of the householder under 18 years','No own children of the householder under 18 years']:
+        for y in ['No workers','1 worker','2 workers','3 or more workers']:
+            B23009[':'.join(['B23009',x,'Other family','Unmarried householder',y])] = \
+                B23009[':'.join(['B23009',x,'Other family','Male householder, no spouse present',y])] + \
+                B23009[':'.join(['B23009',x,'Other family','Female householder, no spouse present',y])]
+
+    B11004['B11004:Other family:Unmarried householder:No related children of the householder under 18 years'] = \
+        B11004['B11004:Other family:Male householder, no spouse present:No related children of the householder under 18 years'] + \
+        B11004['B11004:Other family:Female householder, no spouse present:No related children of the householder under 18 years']
+
+    for x in ['Under 6 years only','Under 6 years and 6 to 17 years','6 to 17 years only']:
+        B11004[':'.join(['B11004','Other family:Unmarried householder:With related children of the householder under 18 years',x])] = \
+            B11004[':'.join(['B11004','Other family:Male householder, no spouse present:With related children of the householder under 18 years',x])] + \
+            B11004[':'.join(['B11004','Other family:Female householder, no spouse present:With related children of the householder under 18 years',x])]
+
+    for x in ['Living alone','With own children under 18 years','With relatives, no own children under 18 years','With only nonrelatives present']:
+        B11012[':'.join(['B11012','Single householder',x])] = \
+            B11012[':'.join(['B11012','Female householder, no spouse or partner present',x])] + \
+            B11012[':'.join(['B11012','Male householder, no spouse or partner present',x])]
+
+    ## combine married and cohab households
+    B11012['B11012:Two-partner household:With own children under 18 years'] = \
+        B11012['B11012:Married-couple household:With own children under 18 years'] + \
+        B11012['B11012:Cohabiting couple household:With own children of the householder under 18 years']
+
+    B11012['B11012:Two-partner household:With no own children under 18 years'] = \
+        B11012['B11012:Married-couple household:With no own children under 18 years'] + \
+        B11012['B11012:Cohabiting couple household:With no own children of the householder under 18 years']
+
+    ## combine married and unmarried partners
+    B09021['B09021:Householder living with partner or partner of householder'] = \
+        B09021['B09021:Householder living with spouse or spouse of householder'] + B09021['B09021:Householder living with unmarried partner or unmarried partner of householder']
+
+    for x in ['18 to 34 years','35 to 64 years','65 years and over']:
+        B09021[':'.join(['B09021',x,'Householder living with partner or partner of householder'])] = \
+            B09021[':'.join(['B09021',x,'Householder living with spouse or spouse of householder'])] + \
+            B09021[':'.join(['B09021',x,'Householder living with unmarried partner or unmarried partner of householder'])]
+
+    ## make occupation and industry dataframe with our custom categories
+    ind_df = read_ind_df(geos,ind_codes)
+    occ_df = read_occ_df(geos,occ_codes)
+
+    ## adjust ACS industry and occ counts using estimated GQ counts
+    ## (industry and occupation expected to be different for gq vs households)
+    print("estimating household employment counts")
+
+    ind_civ_gq = gq_stats[['ind_'+k+'_p|ninst1864civ' for k in ind_codes.keys()]].copy(deep=True) \
+        .apply(lambda s: s * gq_stats['p_18_64_noninst_civil'] * gq_stats['group quarters:18 to 64']) \
+        .rename(columns={
+            'ind_'+k+'_p|ninst1864civ':'C24030:'+k for k in ind_codes.keys()})
+
+    ind_mil_gq = gq_stats[['ind_'+k+'_p|milGQ' for k in ind_codes.keys()]].copy(deep=True) \
+        .apply(lambda s: s * gq_stats['p_18_64_noninst_mil'] * gq_stats['group quarters:18 to 64']) \
+        .rename(columns={
+            'ind_'+k+'_p|milGQ':'C24030:'+k for k in ind_codes.keys()})
+
+    occ_civ_gq = gq_stats[['occ_'+k+'_p|ninst1864civ' for k in occ_codes.keys()]].copy(deep=True) \
+        .apply(lambda s: s * gq_stats['p_18_64_noninst_civil'] * gq_stats['group quarters:18 to 64']) \
+        .rename(columns={
+            'occ_'+k+'_p|ninst1864civ':'C24010:'+k for k in occ_codes.keys()})
+
+    occ_mil_gq = gq_stats[['occ_'+k+'_p|milGQ' for k in occ_codes.keys()]].copy(deep=True) \
+        .apply(lambda s: s * gq_stats['p_18_64_noninst_mil'] * gq_stats['group quarters:18 to 64']) \
+        .rename(columns={
+            'occ_'+k+'_p|milGQ':'C24010:'+k for k in occ_codes.keys()})
+
+    ## use IPF to get hh and gq workers by industry
+    ## assume total (hh+gq) workers in ACS are correct, including industry/occ totals
+    ## assume GQ workers total are correct, unless remaining hh workers would be outside min max bounds
+    ind_col_totals = ind_df[['C24030:'+k for k in ind_codes.keys()]].copy(deep=True)
+    occ_col_totals = occ_df[['C24010:'+k for k in occ_codes.keys()]].copy(deep=True)
+
+    ## calculate minimum # workers in hh
+    min_hh_B23009 = (B23009['B23009:With own children of the householder under 18 years:Married-couple family:1 worker']
+        + 2*B23009['B23009:With own children of the householder under 18 years:Married-couple family:2 workers:']
+        + 3*B23009['B23009:With own children of the householder under 18 years:Married-couple family:3 or more workers:']
+        + B23009['B23009:No own children of the householder under 18 years:Married-couple family:1 worker']
+        + 2*B23009['B23009:No own children of the householder under 18 years:Married-couple family:2 workers:']
+        + 3*B23009['B23009:No own children of the householder under 18 years:Married-couple family:3 or more workers:']
+        + B23009['B23009:With own children of the householder under 18 years:Other family:Unmarried householder:1 worker']
+        + 2*B23009['B23009:With own children of the householder under 18 years:Other family:Unmarried householder:2 workers']
+        + 3*B23009['B23009:With own children of the householder under 18 years:Other family:Unmarried householder:3 or more workers']
+        + B23009['B23009:No own children of the householder under 18 years:Other family:Unmarried householder:1 worker']
+        + 2*B23009['B23009:No own children of the householder under 18 years:Other family:Unmarried householder:2 workers']
+        + 3*B23009['B23009:No own children of the householder under 18 years:Other family:Unmarried householder:3 or more workers']
+        ).rename("min_hh")
+
+    df_bounds = pd.DataFrame({'total_workers':ind_df["C24030:"]})
+    df_bounds = df_bounds.join(min_hh_B23009) 
+    ## in some places minimum # "workers" per table B23009 = more than total people in labor force??
+    df_bounds["min_hh"] = df_bounds[["total_workers","min_hh"]].min(axis=1)
+    ## using total people in hh as max (no other reliable max; B23009 only counts families)
+    df_bounds = df_bounds.join(B09019["B09019:In households:"].rename("max_hh"))
+
+    df_bounds = df_bounds \
+                .join(ind_civ_gq.sum(axis=1).rename("civ_gq_workers")) \
+                .join(ind_mil_gq.sum(axis=1).rename("mil_gq_workers")) \
+                .fillna(0.0)
+
+    ## assuming everyone living in miliary gq works in armed forces:
+    ## can't have more mil gq workers than # armed forces in ACS table B23025
+    df_bounds = df_bounds.join(B23025["B23025:In labor force:Armed Forces"].rename("max_mil"))
+    df_bounds["mil_gq_workers"] = df_bounds[["mil_gq_workers","max_mil"]].min(axis=1)
+
+    ## total hh workers = total workers - gq workers
+    df_bounds["_gq_workers"] = df_bounds["civ_gq_workers"] + df_bounds["mil_gq_workers"]
+    df_bounds["_p_civ"] = (df_bounds["civ_gq_workers"] / df_bounds["_gq_workers"]).fillna(0.0)
+    df_bounds["_p_mil"] = (df_bounds["mil_gq_workers"] / df_bounds["_gq_workers"]).fillna(0.0)
+    df_bounds["hh_workers"] = df_bounds["total_workers"] - df_bounds["_gq_workers"]
+    df_bounds["hh_workers"] = df_bounds[["hh_workers","min_hh"]].max(axis=1)
+    df_bounds["hh_workers"] = df_bounds[["hh_workers","max_hh"]].min(axis=1)
+
+    ## adjust estimated gq totals where hh workers were outside min max bounds
+    df_bounds["_gq_workers"] = df_bounds["total_workers"] - df_bounds["hh_workers"]
+    df_bounds["civ_gq_workers"] = (df_bounds["_p_civ"] * df_bounds["_gq_workers"])#.round(0)
+    df_bounds["mil_gq_workers"] = (df_bounds["_p_mil"] * df_bounds["_gq_workers"])#.round(0)
+
+    if not np.all([np.isclose(df_bounds["civ_gq_workers"] + df_bounds["mil_gq_workers"] , df_bounds["_gq_workers"]).all(),
+    np.isclose(df_bounds["_gq_workers"] + df_bounds["hh_workers"] , df_bounds["total_workers"]).all(),
+    (df_bounds["hh_workers"] <= df_bounds["max_hh"]).all(),
+    (df_bounds["hh_workers"] >= df_bounds["min_hh"]).all()]):
+        print("warning: could not reconcile household and GQ employment sums for some locations")
+
+    ## initial starting point for hh workers by ind/occ = ACS sums * hh workers / total workers
+    df_bounds["_p_hh"] = (df_bounds["hh_workers"] / df_bounds["total_workers"]).fillna(0.0)
+    ind_df = ind_df.join(df_bounds[["_p_hh"]])
+    occ_df = occ_df.join(df_bounds[["_p_hh"]])
+
+    ind_hh = ind_df[['C24030:'+k for k in ind_codes.keys()]].copy(deep=True) \
+        .apply(lambda s: s * ind_df["_p_hh"])
+
+    occ_hh = occ_df[['C24010:'+k for k in occ_codes.keys()]].copy(deep=True) \
+        .apply(lambda s: s * occ_df["_p_hh"])
+
+    ## IPF for each location that has gq workers
+    idxs = df_bounds[df_bounds["_gq_workers"]>0].index
+
+    ## industries
+    for i in idxs:
+        ## rows are: hh, civ gq, mil gq
+        rowsums = df_bounds.loc[i,["hh_workers","civ_gq_workers","mil_gq_workers"]].values
+
+        ## columns are industries/occupations
+        colsums = ind_col_totals.loc[i,:].values
+
+        m = np.stack([ind_hh.loc[i,:].astype(float).values,
+                    ind_civ_gq.loc[i,:].astype(float).values, 
+                    ind_mil_gq.loc[i,:].astype(float).values])
+
+        ## ipf handles 0's poorly; replace with 0.5
+        IPF = ipfn.ipfn(np.maximum(m,0.5), [rowsums,colsums], [[0], [1]], convergence_rate=1e-6, max_iteration=1000, rate_tolerance=0.0)
+        new_m = IPF.iteration()
+
+        ## update initial dfs
+        ind_hh.loc[i,:] = new_m[0,:]
+        ind_civ_gq.loc[i,:] = new_m[1,:]
+        ind_mil_gq.loc[i,:] = new_m[2,:]
+        
+    ## occupations
+    for i in idxs:
+        ## rows are: hh, civ gq, mil gq
+        rowsums = df_bounds.loc[i,["hh_workers","civ_gq_workers","mil_gq_workers"]].values
+
+        ## columns are industries/occupations
+        colsums = occ_col_totals.loc[i,:].values
+
+        m = np.stack([occ_hh.loc[i,:].astype(float).values,
+                    occ_civ_gq.loc[i,:].astype(float).values, 
+                    occ_mil_gq.loc[i,:].astype(float).values])
+
+        ## ipf handles 0's poorly; replace with 0.5
+        IPF = ipfn.ipfn(np.maximum(m,0.5), [rowsums,colsums], [[0], [1]], convergence_rate=1e-6, max_iteration=1000, rate_tolerance=0.0)
+        new_m = IPF.iteration()
+
+        ## update initial dfs
+        occ_hh.loc[i,:] = new_m[0,:]
+        occ_civ_gq.loc[i,:] = new_m[1,:]
+        occ_mil_gq.loc[i,:] = new_m[2,:]
+        
+    ## round to integer (preserve row sums)
+    ind_hh = ind_hh.apply(lrRound,axis=1)
+    ind_civ_gq = ind_civ_gq.apply(lrRound,axis=1)
+    ind_mil_gq = ind_mil_gq.apply(lrRound,axis=1)
+    occ_hh = occ_hh.apply(lrRound,axis=1)
+    occ_civ_gq = occ_civ_gq.apply(lrRound,axis=1)
+    occ_mil_gq = occ_mil_gq.apply(lrRound,axis=1)
+
+    ## save gq employment counts for synth pop construction
+    ind_civ_gq.join(occ_civ_gq).to_csv(os.path.join('processed','gq_civilian_workers.csv'))
+    ind_mil_gq.join(occ_mil_gq).to_csv(os.path.join('processed','gq_military_workers.csv'))
+
+    test_r = df_bounds \
+        .join(ind_civ_gq.sum(axis=1).rename("ipf_civ")) \
+        .join(ind_mil_gq.sum(axis=1).rename("ipf_mil")) \
+        .join(ind_hh.sum(axis=1).rename("ipf_hh")) \
+        .fillna(0.0) \
+        .loc[idxs,:]
+
+    test_c = ind_hh.add(ind_civ_gq,fill_value=0).add(ind_mil_gq,fill_value=0).loc[idxs,:]
+    ref_c = ind_df.loc[idxs,ind_df.columns[1:-1]]
+    x_r = (test_r["hh_workers"] - test_r["ipf_hh"]).apply(abs) > 5.0
+    x_c = test_c.sub(ref_c).apply(abs).apply(lambda s: (s > 5.0).any(),axis=1)
+
+    if x_r.sum() + x_c.sum() > 0:
+        print("warning: IPF could not reconcile household and GQ employment counts for some locations")
+
+    ## join all census tables together (this is household data, for CO targets)
+    acs_tables = B11016.join([B11012,B23009,B11004,B19001,B22010,B09018,B09021,race_eth,ind_hh,occ_hh])
+    acs_tables['state'] = acs_tables.index.map(lambda x: x[0:2])
+    acs_tables['county'] = acs_tables.index.map(lambda x: x[0:5])
+
+    ## income data
+    for k,v in zip(inc_cats,inc_cols):
+        acs_tables['B19001:'+k] = acs_tables[['B19001:'+x for x in v]].sum(axis=1)
+
+    ##
+    ## a couple of cbgs in the ACS aren't in the tract-to-puma xwalk
+    ## this shouldn't happen, as ACS -2019 uses the 2010 cbg boundaries
+    ## drop them from the synth pop, I guess?
+    ## (they're also missing from the OD commute data and from geocorr2018)
+    ##
+    missing_puma = geo_xwalk.index[geo_xwalk['st_puma'].isna()]
+    acs_tables = acs_tables[~acs_tables.index.isin(missing_puma)].copy(deep=True)
+
+    ## drop cbgs with less than 20 hh
+    acs20 = acs_tables[acs_tables['B11012:'] > 19]
+    geo_xwalk20 = geo_xwalk[geo_xwalk.index.isin(acs20.index)]
+
+    print("writing census targets")
+    ## csv of household counts by geography
+    acs_tables['B11012:'].to_csv(os.path.join('processed','hh_counts.csv'))
+    ## csv of target columns from census data
+    acs20[target_columns].to_csv(os.path.join('processed','acs_targets.csv'))
+    ## csv of cbg geo data
+    geo_xwalk20.to_csv(os.path.join('processed','cbg_geo.csv'))
+
     return None
 
 
@@ -924,12 +1083,6 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
 ## 1 w_geocode Char15 Workplace Census Block Code
 ## 2 h_geocode Char15 Residence Census Block Code
 ## 3 S000 Num Total number of jobs
-## 4 SA01 Num Number of jobs of workers age 29 or younger
-## 5 SA02 Num Number of jobs for workers age 30 to 5418
-## 6 SA03 Num Number of jobs for workers age 55 or older
-## 7 SE01 Num Number of jobs with earnings $1250/month or less
-## 8 SE02 Num Number of jobs with earnings $1251/month to $3333/month
-## 9 SE03 Num Number of jobs with earnings greater than $3333/month 
 ##
 ## use JT01, "primary" jobs (because JT00 counts 2+ jobs for the same individual)
 ## "main" = work and live in state
@@ -940,11 +1093,13 @@ def generate_gq(geos, acs_summary, cbg_geo, p_summary):
 ##  aux file for every state in the synth area, named *od_aux_JT01*
 ##  optionally, aux files for other states to capture commute patterns outside the above state(s)
 ##
+## also need:
+##   WAC (work area chars) file for each state in synth area, *wac_S000_JT01*
+##
 ## put into folder "work"
 
 ## this fn converts series to proportions
 ##    unless the series is all zeros, then p = 1 / length
-##    (e.g. if an origin claims nobody there belongs to a certain income category, but we know that's not true)
 def p_or_frac(ser):
     tot = ser.sum()
     if tot==0:
@@ -952,64 +1107,163 @@ def p_or_frac(ser):
     else:
         return ser / tot
 
-def generate_workplaces(geos):
-    print("reading commute data")
+## calculates origin-destination commute matrix and related info for geos in synth pop
+def read_origin_destination(geos, commute_states):
 
     od = read_work_commute()
 
-    print("and filtering by geo")
-
     if geos is not None:
-        ## work in the focal counties, live anywhere
-        work_in_area_all = np.any([od['w_geocode'].str.startswith(g) for g in geos],axis=0)
-        ## live in the focal counties, work anywhere in the state(s) with od files provided
+        ## work in the synth area, live anywhere
+        work_in_area = np.any([od['w_geocode'].str.startswith(g) for g in geos],axis=0)
+        ## live in the synth area, work anywhere in the state(s) with od files provided
         live_in_area = np.any([od['h_geocode'].str.startswith(g) for g in geos],axis=0)
     else: 
         ## if no synth area geos specified, assume work area is synth area
         main_states = od.loc[od["main"]==True, "w_state"].unique()
-        work_in_area_all = od["w_state"].isin(main_states)
+        work_in_area = od["w_state"].isin(main_states)
         live_in_area = od["h_state"].isin(main_states)
 
-    print("generating commute matrix")
+    ## anyone living outside commute distance doesn't really work in the synth area
+    if commute_states is not None:
+        within_commute_dist = od["h_state"].isin(commute_states)
+        work_in_area = work_in_area & within_commute_dist
 
-    ## - put home locs outside the synth area in a separate file
-    ## -- we don't have info on those locations, so those individuals need to get added in as-is
-    od[work_in_area_all & ~live_in_area].to_csv(os.path.join('processed','work_locs_live_outside.csv'), index=False)
-
-    ## will need employer sizes for these counties
-    work_counties = od[work_in_area_all | live_in_area]["w_county"].unique()
-
-    ## group OD by home, convert to p(destination)
-    ## - treat all dests outside as a single dest, since we don't (yet) need to differentiate btw them
-    ##   (all dests are in the state(s) loaded in the OD files)
-    ## can't do this at the block level, numbers are too small relative to integer rounding
     od["work_dest"] = od["w_cbg"]
-    od.loc[live_in_area & ~work_in_area_all, "work_dest"] = "outside"
-    od = od.loc[live_in_area]
+    od["origin"] = od["h_cbg"]
+    od.loc[~work_in_area, "work_dest"] = "outside"
+    od.loc[~live_in_area, "origin"] = "outside"
 
-    ## two income categories: SE01 + SE02 (low), SE03 (high)
-    od["inc_low"] = od["SE01"] + od["SE02"]
-    od["inc_high"] = od["SE03"]
+    ## drop anyone who neither works nor lives in the synth area
+    od = od[work_in_area | live_in_area]
 
-    ## calculate proportions
-    ## apply() on groupby acts on a dataframe; then we apply() a fn to each col of that df (yes it's confusing)    
-    od_matrix = od[['h_cbg','work_dest','inc_low','inc_high']] \
-        .groupby(['h_cbg','work_dest'],group_keys=True).agg({"inc_low":sum,"inc_high":sum}) \
-        .groupby(level=0,group_keys=False).apply(lambda x: x.apply(p_or_frac)) \
-        .loc[:, ['inc_low','inc_high']] \
-        .stack().unstack(level="work_dest").fillna(0)
+    n_commuting_in = od.loc[od.origin=="outside","S000"].sum()
+
+    n_commuting_out = od.loc[od.work_dest=="outside", "S000"].sum()
+
+    ## will need employer sizes for these counties, save for later
+    work_counties = od["w_county"].unique()
+    pd.DataFrame({"county":work_counties}).to_csv(os.path.join('processed','work_sizes.csv'))
 
     ## calculate proportions (not separated by income)
-    od_matrix2 = od[['h_cbg','work_dest','S000']] \
-        .groupby(['h_cbg','work_dest'],group_keys=True).agg({"S000":sum}) \
+    od_matrix = od[['origin','work_dest','S000']] \
+        .groupby(['origin','work_dest'],group_keys=True).agg({"S000":sum}) \
         .groupby(level=0,group_keys=False).apply(lambda x: x.apply(p_or_frac)) \
         .loc[:,'S000'] \
         .unstack().fillna(0)
 
-    od_matrix.to_csv(os.path.join('processed','work_od_matrix.csv'),float_format="%.6g")
-    od_matrix2.to_csv(os.path.join('processed','work_od_matrix_no_inc.csv'),float_format="%.6g")
+    return (od_matrix, n_commuting_in, n_commuting_out)
 
-    return work_counties
+## estimate workers by industry x destination from WAC data
+def read_industry_by_dest(geos, ind_codes, ind_keys):
+
+    ## map industry keys to WAC column names
+    numcols = ['C000', 'CNS01', 'CNS02', 'CNS03', 'CNS04', 'CNS05', 'CNS06', 'CNS07', 'CNS08',
+        'CNS09', 'CNS10', 'CNS11', 'CNS12', 'CNS13', 'CNS14', 'CNS15', 'CNS16',
+        'CNS17', 'CNS18', 'CNS19', 'CNS20']
+
+    ## from wac documentation
+    wac_col_ind = {"CNS01": ["11"],
+    "CNS02": ["21"],
+    "CNS03": ["22"],
+    "CNS04": ["23"],
+    "CNS05": ["31","32","33","3M"],
+    "CNS06": ["42"],
+    "CNS07": ["44","45","4M"],
+    "CNS08": ["48","49"],
+    "CNS09": ["51"],
+    "CNS10": ["52"],
+    "CNS11": ["53"],
+    "CNS12": ["54"],
+    "CNS13": ["55"],
+    "CNS14": ["56"],
+    "CNS15": ["61"],
+    "CNS16": ["62"],
+    "CNS17": ["71"],
+    "CNS18": ["72"],
+    "CNS19": ["81"],
+    "CNS20": ["92"],
+    }
+
+    wac_ind_col = {x:k for k in wac_col_ind for x in wac_col_ind[k]}
+
+    ind_to_wac = {k:list(set([wac_ind_col[i] for i in ind_codes[k][0]])) for k in ind_keys}
+
+    wac_files = glob(os.path.join("work","*wac_S000_JT01*.[c|z]*"))
+    dfs = []
+    for f in wac_files:
+        df = pd.read_csv(f,usecols=["w_geocode",*numcols],dtype=({"w_geocode":str} | {x:"Int64" for x in numcols}))
+        dfs.append(df)
+    wac = pd.concat(dfs,ignore_index=True)
+    wac['w_cbg'] = wac['w_geocode'].apply(lambda x: x[0:12])
+    wac['w_county'] = wac['w_geocode'].apply(lambda x: x[0:5])
+    wac['w_state'] = wac['w_geocode'].apply(lambda x: x[0:2])
+
+    if geos is not None:
+        in_area = np.any([wac['w_geocode'].str.startswith(g) for g in geos],axis=0)
+        wac = wac.loc[in_area]
+
+    ## sum the WAC columns corresponding to each industry
+    for k in ind_keys:
+        wac[k] = wac[ind_to_wac[k]].sum(axis=1).astype("Int64")
+
+    wac["work_dest"] = wac["w_cbg"]
+
+    ## aggregate by work destination
+    wac_by_dest = wac[["work_dest", *ind_keys]].groupby("work_dest").agg(sum)
+    return wac_by_dest
+
+## write origin-destination, origin-industry, and industry-destination commute data
+## to use in generating commutes by industry
+def calc_commute_marginals(geos,ind_codes,ind_keys,commute_states):
+    print("reading commute data")
+    od_matrix, n_commuting_in, n_commuting_out = read_origin_destination(geos, commute_states)
+
+    ind_df = read_ind_df(geos, ind_codes)
+    ind_df = ind_df.astype(float).sort_index()
+
+    ## proportion of workers by industry, same order as ind_keys
+    p_by_ind = ind_df[["C24030:"+k for k in ind_keys]].values.sum(axis=0) / ind_df["C24030:"].values.sum()
+
+    ## workers living outside synth area by industry not known
+    ## estimate as n_commuting_in * p_by_ind
+    ind_df.loc["outside","C24030:"] = n_commuting_in
+    ind_df.loc["outside", ["C24030:"+k for k in ind_keys]] = n_commuting_in * p_by_ind
+    ## save those for later; they are not generated anywhere else
+    pd.DataFrame(ind_df.loc["outside", ["C24030:"+k for k in ind_keys]]).round(2).to_csv(
+        os.path.join('processed','work_cats_live_outside.csv'))
+
+    ## keep just the necessary columns, same order as ind_keys
+    ind_df = ind_df.loc[:,["C24030:"+k for k in ind_keys]]
+
+    ## this index should have all the locations in the synth pop
+    origin_index = ind_df.index
+
+    ## make the commute matrix have the same row index as the census data
+    ## some census locations have no commute data; these _should_ be ones with no workers
+    ##   but make those rows sum to 1 anyway
+    n_destinations = od_matrix.shape[1]
+    od_matrix = pd.DataFrame(index=origin_index).join(od_matrix).fillna(1.0 / n_destinations)
+
+    ## this index has all the work locations in the synth pop
+    dest_index = od_matrix.columns
+
+    ## estimate workers by industry x destination from WAC data
+    wac_by_dest = read_industry_by_dest(geos, ind_codes, ind_keys)
+
+    ## make it have the same index as work_dest in od_matrix
+    wac_by_dest = pd.DataFrame(index=dest_index).join(wac_by_dest).astype(float)
+
+    ## n people working outside the synth pop by industry is unknown
+    ## estimate it as n_commuting_out * p_by_industry
+    wac_by_dest.loc["outside",ind_keys] = n_commuting_out * p_by_ind
+
+    ## save for next step
+    print("writing commute-by-industry sums")
+    od_matrix.to_csv(os.path.join("processed","work_od_prop.csv"),float_format="%.8g")
+    ind_df.round(2).to_csv(os.path.join("processed","work_io_sums.csv"))
+    wac_by_dest.round(2).to_csv(os.path.join("processed","work_id_est_sums.csv"))
+
+    return None
 
 ## employer size data from:
 ## https://www.census.gov/programs-surveys/cbp/data/datasets.html
@@ -1029,9 +1283,10 @@ def generate_workplaces(geos):
 #                                2,500-4,999 Employees
 #N1000_4         N       Number of Establishments: Employment Size Class:
 #                                5,000 or More Employees
-def generate_work_sizes(work_counties):
+def generate_work_sizes():
     print("generating employer sizes")
 
+    work_counties = pd.read_csv(os.path.join('processed','work_sizes.csv'),dtype=str)["county"].values
     cbp = read_cbp(work_counties)
     ##
     ## attempt to infer size distribution
@@ -1123,6 +1378,39 @@ def generate_schools(geos):
 
 
 def main():
+
+    ## industries and occupations to use in the synth pop
+    ## each associated with codes from PUMS and column names from processed census data
+    ind_codes = {'AGR_EXT':(["11", "21"],'Agriculture, forestry, fishing and hunting, and mining:'),
+    'CON':(["23"],'Construction'),
+    'MFG':(["31", "32", "33", "3M"],'Manufacturing'),
+    'WHL':(["42"],'Wholesale trade'),
+    'RET':(["44", "45", "4M"],'Retail trade'),
+    'TRN_UTL':(["48", "49", "22"],'Transportation and warehousing, and utilities:'),
+    'INF':(["51"],'Information'),
+    'FIN':(["52", "53"],'Finance and insurance, and real estate, and rental and leasing:'),
+    'PRF':(["54", "55", "56"],'Professional, scientific, and management, and administrative, and waste management services:'),
+    'EDU':(["61"],'Educational services, and health care and social assistance:Educational services'),
+    'MED':(["62"],'Educational services, and health care and social assistance:Health care and social assistance'),
+    'ENT_art':(["71"],'Arts, entertainment, and recreation, and accommodation and food services:Arts, entertainment, and recreation'),
+    'ENT_food':(["72"],'Arts, entertainment, and recreation, and accommodation and food services:Accommodation and food services'),
+    'SRV':(["81"],'Other services, except public administration'),
+    'ADM_MIL':(["92"],'ADM_MIL')}
+
+    occ_codes = {'MBSA':(["11","13","15","17","19","21","23","27"],'MBSA'),
+    'EDU':(["25"],'EDU'),
+    'MED':(["29"],'MED'),
+    'HLS':(["31"],'Service occupations:Healthcare support occupations'),
+    'PRT':(["33"],'Service occupations:Protective service occupations:'),
+    'EAT':(["35"],'Service occupations:Food preparation and serving related occupations'),
+    'CLN':(["37"],'Service occupations:Building and grounds cleaning and maintenance occupations'),
+    'PRS':(["39"],'Service occupations:Personal care and service occupations'),
+    'SAL':(["41"],'Sales and office occupations:Sales and related occupations'),
+    'OFF':(["43"],'Sales and office occupations:Office and administrative support occupations'),
+    'FFF_RPR':(["45","47","49"],'Natural resources, construction, and maintenance occupations:'),
+    'PRD_TRN':(["51","53"],'Production, transportation, and material moving occupations:'),
+    'MIL':(["55"],'MIL')}
+
     ## default income categories
     inc_cats_def = ['q1_1', 'q1_2', 'q1_3', 'q2', 'q3', 'q4', 'q5']
     inc_cols_def = [['Less than $10,000'],
@@ -1145,15 +1433,168 @@ def main():
     LODES_cutoff = d.get("LODES_annual_income_boundary",40000)
     ## read states/counties to include
     geos = d.get("geos",None)
+    commute_states = d.get("commute_states",None)
+
+    ## additional individual (boolean) traits generated in read_psamp() to include in p_samples.csv summary
+    more_summary_cols = d.get("additional_traits",
+                              ['sch_public','sch_private','female','race_black_alone','white_non_hispanic','hispanic'])
+
+    ## which census columns to match in synth pop
+    ##  read from census or generated in generate_targets()
+    target_columns = ['B11016:Family households:2-person household',
+        'B11016:Family households:3-person household',
+        'B11016:Family households:4-person household',
+        'B11016:Family households:5-person household',
+        'B11016:Family households:6-person household',
+        'B11016:Family households:7-or-more person household',
+        'B11016:Nonfamily households:1-person household',
+        'B11016:Nonfamily households:2-person household',
+        'B11016:Nonfamily households:3-person household',
+        'B11016:Nonfamily households:4-person household',
+        'B11016:Nonfamily households:5-person household',
+        'B11016:Nonfamily households:6-person household',
+        'B11016:Nonfamily households:7-or-more person household',
+        ## covers distribution of workers per household reasonably well:
+        'B23009:With own children of the householder under 18 years:Married-couple family:No workers',
+        'B23009:With own children of the householder under 18 years:Married-couple family:1 worker',
+        'B23009:With own children of the householder under 18 years:Married-couple family:2 workers:',
+        'B23009:With own children of the householder under 18 years:Married-couple family:3 or more workers:',
+        'B23009:With own children of the householder under 18 years:Other family:Unmarried householder:No workers',
+        'B23009:With own children of the householder under 18 years:Other family:Unmarried householder:1 worker',
+        'B23009:With own children of the householder under 18 years:Other family:Unmarried householder:2 workers',
+        'B23009:With own children of the householder under 18 years:Other family:Unmarried householder:3 or more workers',
+        'B23009:No own children of the householder under 18 years:Married-couple family:No workers',
+        'B23009:No own children of the householder under 18 years:Married-couple family:1 worker',
+        'B23009:No own children of the householder under 18 years:Married-couple family:2 workers:',
+        'B23009:No own children of the householder under 18 years:Married-couple family:3 or more workers:',
+        'B23009:No own children of the householder under 18 years:Other family:Unmarried householder:No workers',
+        'B23009:No own children of the householder under 18 years:Other family:Unmarried householder:1 worker',
+        'B23009:No own children of the householder under 18 years:Other family:Unmarried householder:2 workers',
+        'B23009:No own children of the householder under 18 years:Other family:Unmarried householder:3 or more workers',
+        # "related" covers almost all children in households
+        'B11004:Married-couple family:With related children of the householder under 18 years:Under 6 years only',
+        'B11004:Married-couple family:With related children of the householder under 18 years:Under 6 years and 6 to 17 years',
+        'B11004:Married-couple family:With related children of the householder under 18 years:6 to 17 years only',
+        'B11004:Married-couple family:No related children of the householder under 18 years',
+        'B11004:Other family:Unmarried householder:With related children of the householder under 18 years:Under 6 years only',
+        'B11004:Other family:Unmarried householder:With related children of the householder under 18 years:Under 6 years and 6 to 17 years',
+        'B11004:Other family:Unmarried householder:With related children of the householder under 18 years:6 to 17 years only',
+        'B11004:Other family:Unmarried householder:No related children of the householder under 18 years',
+        ## covers unmarried partners and married-couple families:
+        'B11012:Two-partner household:With own children under 18 years',
+        'B11012:Two-partner household:With no own children under 18 years',
+        ## various types of non-partner households:
+        'B11012:Single householder:Living alone',
+        'B11012:Single householder:With own children under 18 years',
+        'B11012:Single householder:With relatives, no own children under 18 years',
+        'B11012:Single householder:With only nonrelatives present',
+        'B09018:', ## total children u18 in households, any relationship
+        'B09018:Grandchild', ## under 18 (need this to sample multi-gen households)
+        ## covers all adults in households:
+        'B09021:18 to 34 years:Lives alone',
+        'B09021:18 to 34 years:Householder living with partner or partner of householder',
+        'B09021:18 to 34 years:Child of householder',
+        'B09021:18 to 34 years:Other relatives',
+        'B09021:18 to 34 years:Other nonrelatives',
+        'B09021:35 to 64 years:Lives alone',
+        'B09021:35 to 64 years:Householder living with partner or partner of householder',
+        'B09021:35 to 64 years:Child of householder',
+        'B09021:35 to 64 years:Other relatives',
+        'B09021:35 to 64 years:Other nonrelatives',
+        'B09021:65 years and over:Lives alone',
+        'B09021:65 years and over:Householder living with partner or partner of householder',
+        # sometimes the ACS has weirdly high estimates for this, seems unlikely
+        #'B09021:65 years and over:Child of householder',
+        'B09021:65 years and over:Other relatives',
+        'B09021:65 years and over:Other nonrelatives',
+            *['B19001:'+k for k in inc_cats],
+        'B22010:Household received Food Stamps/SNAP in the past 12 months:',
+        *['C24030:'+k for k in ind_codes.keys()],
+        ## leave out occupations for now
+        #*['C24010:'+k for k in occ_codes.keys()],
+        "B25006:Householder who is Black or African American alone",
+        "B11001H:Householder white non-hispanic",
+        "B11001I:Householder hispanic any race"
+        ]
+
+    ## generated sample columns that match each of target_columns, in the same order:
+    ## (generated in read_psamp and read_hsamp)
+    sample_columns = ['fam_hh_2', 'fam_hh_3', 'fam_hh_4', 'fam_hh_5', 'fam_hh_6', 'fam_hh_7o', 
+        'non_fam_hh_1', 'non_fam_hh_2', 'non_fam_hh_3', 'non_fam_hh_4', 'non_fam_hh_5', 'non_fam_hh_6', 'non_fam_hh_7o', 
+        'w_own_ch_u18_married_fam_work0', 
+        'w_own_ch_u18_married_fam_work1',
+        'w_own_ch_u18_married_fam_work2',
+        'w_own_ch_u18_married_fam_work3o',
+        'w_own_ch_u18_unmar_fam_work0', 
+        'w_own_ch_u18_unmar_fam_work1',
+        'w_own_ch_u18_unmar_fam_work2',
+        'w_own_ch_u18_unmar_fam_work3o',
+        'no_own_ch_u18_married_fam_work0',
+        'no_own_ch_u18_married_fam_work1',
+        'no_own_ch_u18_married_fam_work2',
+        'no_own_ch_u18_married_fam_work3o',
+        'no_own_ch_u18_unmar_fam_work0',
+        'no_own_ch_u18_unmar_fam_work1',
+        'no_own_ch_u18_unmar_fam_work2',
+        'no_own_ch_u18_unmar_fam_work3o', 
+        'fam_married_w_rel_ch_u6_only',
+        'fam_married_w_rel_ch_u6_and_6_17', 
+        'fam_married_w_rel_ch_6_17_only',
+        'fam_married_no_rel_ch_u18',
+        'fam_unmar_w_rel_ch_u6_only', 
+        'fam_unmar_w_rel_ch_u6_and_6_17', 
+        'fam_unmar_w_rel_ch_6_17_only',
+        'fam_unmar_no_rel_ch_u18',
+        'partner_hh_ch_u18', 
+        'partner_hh_no_ch_u18', 
+        'hh_alone',
+        'hh_single_ch_u18', 
+        'hh_single_other_rel', 
+        'hh_nonrel_only',
+        'ch_u18_in_hh',
+        'grandch_u18',
+        'age_18_34_alone',
+        'age_18_34_partner', 
+        'age_18_34_child_of_hh',
+        'age_18_34_other_rel', 
+        'age_18_34_non_rel', 	   
+        'age_35_64_alone', 
+        'age_35_64_partner', 
+        'age_35_64_child_of_hh',
+        'age_35_64_other_rel', 
+        'age_35_64_non_rel', 
+        'age_65o_alone',
+        'age_65o_partner', 
+        # sometimes the ACS has weirdly high estimates for this, seems unlikely
+        #'age_65o_child_of_hh', 
+        'age_65o_other_rel',
+        'age_65o_non_rel',
+        *inc_cats,
+        'snap',
+        *['ind_'+k for k in ind_codes.keys()],
+        ## leave out occupations for now
+        #*['occ_'+k for k in occ_codes.keys()],
+        'hh_race_black_alone',
+        'hh_white_non_hispanic',
+        'hh_hispanic'
+        ]
 
     ## output directory
     os.makedirs("processed",exist_ok=True)
+    
+    ## save codes for workplace gen
+    ind_keys = list(ind_codes.keys())
+    with open(os.path.join('processed','codes.json'), 'w') as f:
+        json.dump({'ind_codes':ind_keys, 'occ_codes':list(occ_codes.keys())}, f)
 
-    acs_summary, cbg_geo = generate_targets(geos, inc_cats, inc_cols)
-    p_summary = generate_samples(ADJINC, inc_cats, inc_cols, LODES_cutoff)
-    generate_gq(geos, acs_summary, cbg_geo, p_summary)
-    work_counties = generate_workplaces(geos)
-    generate_work_sizes(work_counties)
+    p_summary = generate_samples(sample_columns, ADJINC, inc_cats, inc_cols, LODES_cutoff, ind_codes, occ_codes, more_summary_cols)
+    adults_hh_cbg = read_acs('B09021',geos)[['B09021:']]
+    cbg_index = adults_hh_cbg.index
+    geo_xwalk = read_geo_xwalk(cbg_index)
+    gq_stats = generate_gq(geos, adults_hh_cbg, geo_xwalk, p_summary, ind_codes, occ_codes)
+    generate_targets(target_columns, geos, geo_xwalk, gq_stats, inc_cats, inc_cols, ind_codes, occ_codes)
+    calc_commute_marginals(geos, ind_codes, ind_keys, commute_states)
+    generate_work_sizes()
     generate_schools(geos)
 
     print("")
@@ -1162,190 +1603,6 @@ def main():
 
 
 
-def generate_test_targets(geos):
-
-    ## B09002 own ch u 18 by age and family type
-    B09002 = read_acs('B09002',geos)
-    ## B19123 Families; by size and public assistance/snap
-    B19123 = read_acs('B19123',geos)
-    ## B22010 households; person with disability
-    B22010 = read_acs('B22010',geos)
-    ## B23008 Own children under 18 years in families and subfamilies
-    B23008 = read_acs('B23008',geos)
-    ## householder race
-    B25006 = read_acs('B25006',geos)
-    ## households internet access
-    B28002 = read_acs('B28002',geos)
-    ## B28006 Household population 25 years and over; educational achievement
-    B28006 = read_acs('B28006',geos)
-
-    for x in ["Under 6 years","6 to 17 years"]:
-        B23008[":".join(["B23008",x,"Living with two parents:One parent in labor force"])] = \
-            B23008[":".join(["B23008",x,"Living with two parents:Father only in labor force"])] + \
-            B23008[":".join(["B23008",x,"Living with two parents:Mother only in labor force"])]
-        for y in ["In labor force","Not in labor force"]:
-            B23008[":".join(["B23008",x,"Living with one parent",y])] = \
-                B23008[":".join(["B23008",x,"Living with one parent:Living with father",y])] + \
-                B23008[":".join(["B23008",x,"Living with one parent:Living with mother",y])]
-
-    for x in ["Under 3 years","3 and 4 years","5 years","6 to 11 years","12 to 17 years"]:
-        B09002[":".join(["B09002:In other families:Single householder, no spouse present",x])] = \
-            B09002[":".join(["B09002:In other families:Male householder, no spouse present",x])] + \
-            B09002[":".join(["B09002:In other families:Female householder, no spouse present",x])]
-        
-    for x in ["In married-couple families","In other families:Single householder, no spouse present"]:
-        B09002[":".join(["B09002",x,"3 to 5 years"])] = \
-            B09002[":".join(["B09002",x,"3 and 4 years"])] + \
-            B09002[":".join(["B09002",x,"5 years"])]
-
-    for x in ["Households with 1 or more persons with a disability","Households with no persons with a disability"]:
-        B22010[":".join(["B22010",x])] = \
-            B22010[":".join(["B22010:Household received Food Stamps/SNAP in the past 12 months",x])] + \
-            B22010[":".join(["B22010:Household did not receive Food Stamps/SNAP in the past 12 months",x])]
-        
-    ## join all census tables together
-    acs_tables = B25006.join([B09002,B19123,B22010,B23008,B28002,B28006])
-    acs_tables['state'] = acs_tables.index.map(lambda x: x[0:2])
-    acs_tables['county'] = acs_tables.index.map(lambda x: x[0:5])
-
-    ## which census columns to match:
-    target_columns = [
-        'B09002:In married-couple families:Under 3 years',
-        'B09002:In married-couple families:3 to 5 years',
-        'B09002:In married-couple families:6 to 11 years',
-        'B09002:In married-couple families:12 to 17 years',
-        'B09002:In other families:Single householder, no spouse present:Under 3 years',
-        'B09002:In other families:Single householder, no spouse present:3 to 5 years',
-        'B09002:In other families:Single householder, no spouse present:6 to 11 years',
-        'B09002:In other families:Single householder, no spouse present:12 to 17 years',
-        'B19123:2-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
-        'B19123:3-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
-        'B19123:4-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
-        'B19123:5-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
-        'B19123:6-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
-        'B19123:7-or-more-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
-        'B22010:Households with 1 or more persons with a disability',
-        'B23008:Under 6 years:Living with two parents:Both parents in labor force',
-        'B23008:Under 6 years:Living with two parents:One parent in labor force',    
-        'B23008:Under 6 years:Living with two parents:Neither parent in labor force',
-        'B23008:Under 6 years:Living with one parent:In labor force',
-        'B23008:Under 6 years:Living with one parent:Not in labor force',
-        'B23008:6 to 17 years:Living with two parents:Both parents in labor force',
-        'B23008:6 to 17 years:Living with two parents:One parent in labor force',    
-        'B23008:6 to 17 years:Living with two parents:Neither parent in labor force',
-        'B23008:6 to 17 years:Living with one parent:In labor force',
-        'B23008:6 to 17 years:Living with one parent:Not in labor force',
-        'B25006:Householder who is White alone',
-        'B25006:Householder who is Black or African American alone',
-        'B25006:Householder who is American Indian and Alaska Native alone',
-        'B25006:Householder who is Asian alone',
-        'B25006:Householder who is Native Hawaiian and Other Pacific Islander alone',
-        'B25006:Householder who is Some other race alone',
-        'B25006:Householder who is Two or more races:',
-        "B28002:With an Internet subscription",
-        "B28002:Internet access without a subscription",
-        "B28002:No Internet access",
-        "B28006:Less than high school graduate or equivalency:",
-        "B28006:High school graduate (includes equivalency) , some college or associate's degree :",
-        "B28006:Bachelor's degree or higher:"]
-
-    file = glob(os.path.join("geo","*Census_Tract_to*PUMA*.*"))[0]
-    tpum = pd.read_csv(file,dtype=str)
-    tpum['st_puma'] = tpum['STATEFP']+tpum['PUMA5CE']
-    tpum['tract'] = tpum['STATEFP']+tpum['COUNTYFP']+tpum['TRACTCE']
-    ## note, population 0 cbgs are not in geocorr
-    cbg_geo = pd.DataFrame({'Geo':acs_tables.index, 
-                            'tract':acs_tables.index.map(lambda x: x[0:-1]),
-                            'county':acs_tables.index.map(lambda x: x[0:5])})
-    cbg_geo = cbg_geo.merge(tpum, how='left', on='tract').set_index('Geo', verify_integrity=True)
-    missing_puma = cbg_geo.index[cbg_geo['st_puma'].isna()]
-    acs_tables = acs_tables[~acs_tables.index.isin(missing_puma)].copy(deep=True)
-
-    ## drop cbgs with less than 20 hh
-    acs20 = acs_tables[acs_tables['B25006:'] > 19]
-    acs20[target_columns].to_csv(os.path.join('processed','test_targets.csv'))
-
-    return None
-
-
-def gen_samp_test_cols(ADJINC, inc_cats, inc_cols, LODES_cutoff):
-
-    hsamp, psamp = read_hsamp_psamp(ADJINC, inc_cats, inc_cols, LODES_cutoff)
-    ## generated sample columns that match each of target_columns, in the same order:
-    sample_columns = ['own_ch_u3_in_fam_married',
-        'own_ch_3_5_in_fam_married',
-        'own_ch_6_11_in_fam_married',
-        'own_ch_12_17_in_fam_married',
-        'own_ch_u3_in_fam_unmar',
-        'own_ch_3_5_in_fam_unmar',
-        'own_ch_6_11_in_fam_unmar',
-        'own_ch_12_17_in_fam_unmar',
-        'fam_hh_2_snap_pap',
-        'fam_hh_3_snap_pap',
-        'fam_hh_4_snap_pap',
-        'fam_hh_5_snap_pap',
-        'fam_hh_6_snap_pap',
-        'fam_hh_7o_snap_pap',
-        'h_1_or_more_with_disab',
-        'esp_2p_2w_age_u6',
-        'esp_2p_1w_age_u6',
-        'esp_2p_nw_age_u6',
-        'esp_1p_1w_age_u6',
-        'esp_1p_nw_age_u6',
-        'esp_2p_2w_age_6_17',
-        'esp_2p_1w_age_6_17',
-        'esp_2p_nw_age_6_17',
-        'esp_1p_1w_age_6_17',
-        'esp_1p_nw_age_6_17',
-        'hh_race_white_alone',
-        'hh_race_black_alone',
-        'hh_race_amerindian_or_alaskan',
-        'hh_race_asian_alone',
-        'hh_race_pacific_alone',
-        'hh_race_other_alone',
-        'hh_race_two_or_more',
-        'h_internet_sub',
-        'h_internet_nosub',
-        'h_no_internet',
-        'edu_not_hsgrad_age_25o',
-        'edu_hs_or_somecoll_age_25o',
-        'edu_bach_or_higher_age_25o']
-
-    ## csv of household samples
-    hsamp[sample_columns].to_csv(os.path.join('processed','test_samples.csv'))
-
-    return None
-
-
-def test_cols():
-    inc_cats_def = ['q1_1', 'q1_2', 'q1_3', 'q2', 'q3', 'q4', 'q5']
-    inc_cols_def = [['Less than $10,000'],
-                    ['$10,000 to $14,999', '$15,000 to $19,999', '$20,000 to $24,999'],
-                    ['$25,000 to $29,999', '$30,000 to $34,999', '$35,000 to $39,999'],
-                    ['$40,000 to $44,999', '$45,000 to $49,999', '$50,000 to $59,999', '$60,000 to $74,999'],
-                    ['$75,000 to $99,999', '$100,000 to $124,999'],
-                    ['$125,000 to $149,999', '$150,000 to $199,999'],
-                    ['$200,000 or more']]
-
-    ## parameters from file config.json
-    with open("config.json", 'r') as f:
-        d = json.load(f)
-
-    ## read ADJINC
-    ADJINC = d.get("inc_adj",1.010145)
-    ## read income categories
-    inc_cats = d.get("inc_cats",inc_cats_def)
-    inc_cols = d.get("inc_cols",inc_cols_def)
-    LODES_cutoff = d.get("LODES_annual_income_boundary",40000)
-    ## read states/counties to include
-    geos = d.get("geos",None)
-
-    generate_test_targets(geos)
-    gen_samp_test_cols(ADJINC, inc_cats, inc_cols, LODES_cutoff)
-
-
-
-main()
-
-#test_cols()
+if __name__ == "__main__":
+    main()
 

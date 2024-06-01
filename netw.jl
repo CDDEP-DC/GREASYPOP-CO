@@ -210,22 +210,23 @@ function sp_from_groups(connect_fn, keygroups::Vector{Vector{T}}, p_idxs::Dict{P
                         length(p_idxs),length(p_idxs)) ## ensure size is p_idxs by p_idxs
 end
 
+
 ##
 ## generate all networks
 ##
 function generate_networks()
 
     dConfig = tryJSON("config.json")
-    inc_seg_wp = Bool(get(dConfig, "income_segregated_workplaces", 1))
     work_K::Int = get(dConfig, "workplace_K", 8) ## mean degree for wp networks
     school_K::Int = get(dConfig, "school_K", 12) ## mean degree for school networks
+    gq_K::Int = get(dConfig, "gq_K", 12) ## mean degree for group-quarters networks
     other_K::Int = get(dConfig, "netw_K", 8) ## mean degree for other networks
-    other_B::Float64 = get(dConfig, "netw_B", 0.25) ## beta param for small world networks
+    sm_world_B::Float64 = get(dConfig, "netw_B", 0.25) ## beta param for small world networks
     work_assoc_coeff::Float64 = get(dConfig, "income_associativity_coefficient", 0.9) ## group associativity for workplace networks
     sch_assoc_coeff::Float64 = get(dConfig, "school_associativity_coefficient", 0.9) ## group associativity for school networks
     
     ## from workplaces.jl; workers grouped into companies
-    ## worker is (person id, hh id, cbg id, income category) -- last one only if income seg wp's were generated
+    ## worker is (person id, hh id, cbg id, income category)
     company_workers = collect(values(dser_path("jlse/company_workers.jlse")))
     #school students and teachers
     ## student/teacher is (person id, hh id, cbg id, grade) -- first 3 are a person key
@@ -252,11 +253,11 @@ function generate_networks()
     ## generate network
     ## workplaces: using stochastic block model (SBM) network
     ## so that all results are comparable, use the SBM algo even if there's only one income group in a wp
-    adj_wp = sp_from_groups(v->connect_SBM(v, work_K, work_K+2, work_assoc_coeff, inc_seg_wp), company_workers, p_idxs)
+    adj_wp = sp_from_groups(v->connect_SBM(v, work_K, work_K+2, work_assoc_coeff, true), company_workers, p_idxs)
     ## schools: using SBM, grouped by grade
     adj_sch = sp_from_groups(v->connect_SBM(v, school_K, school_K+2, sch_assoc_coeff, true), ppl_in_schools, p_idxs)
     ## other institutions (currently just gq's) : using small-world network
-    adj_gq = sp_from_groups(v->connect_small_world(v, other_K, other_K+2, other_B), ppl_in_gq, p_idxs)
+    adj_gq = sp_from_groups(v->connect_small_world(v, gq_K, gq_K+2, sm_world_B), ppl_in_gq, p_idxs)
     ## households are fully connected
     adj_hh = sp_from_groups(v->connect_complete(v), ppl_in_hhs, p_idxs)
     ## save combined non-hh netw for when those distinctions are not needed
@@ -328,7 +329,8 @@ function generate_location_matrices()
     cbg_idxs = Dict(k=>String31(v) for (k,v) in cbg_idxs)
     gqs = dser_path("jlse/gqs.jlse") ## group-quarters/residents (with gq locations)
     ## assume only non-inst GQ residents are available for ephemeral local contacts
-    gq_noninst = filterv(x->x.type==:noninst1864, gqs)
+    ni_types = Set([:milGQ, :ninst1864civ])
+    gq_noninst = filterv(x->(x.type in ni_types), gqs)
     ## use the same matrix indices as in the regular contact networks
     k = dser_path("jlse/adj_mat_keys.jlse")
     p_idxs = Dict(k .=> eachindex(k))
@@ -393,125 +395,5 @@ function generate_location_matrices()
     return nothing
 end
 
-
-
-## generate a crude holiday contact matrix
-## every household is visited by Poisson(2) other households
-## all workplaces are closed
-## non-inst GQ just stay put for now
-## -- GQ workers will split their time between holiday and their patients/wards, I guess
-## also generate holiday location lookup and location contact matrices
-
-## group each element in v with the subsequent Poisson(L) elements
-function clump_pois(v::Vector{T},L::Int) where T<:Any
-    N = length(v)
-    draws = Int[]
-    s = 0
-    ok = true
-    while ok
-        x = 1 + rand(Poisson(L))
-        s += x
-        if s >= N
-            ok = false
-            push!(draws,N+x-s) ## remainder
-        else
-            push!(draws,x)
-        end
-    end
-    return [v[i] for i in ranges(draws)]    
-end
-
-function rev_mat_keys()
-    k = dser_path("jlse/adj_mat_keys.jlse")
-    return Dict(k .=> eachindex(k))
-end
-
-function generate_holiday_contacts()
-
-    dConfig = tryJSON("config.json")
-    other_K::Int = get(dConfig, "netw_K", 8) ## mean degree for other networks
-    other_B::Float64 = get(dConfig, "netw_B", 0.25) ## beta param for small world networks
-
-    p_idxs = rev_mat_keys()
-    hh_ppl = dser_path("jlse/hh_ppl.jlse")
-    hkeys = shuffle(collect(keys(hh_ppl)))
-    hgroups = clump_pois(hkeys,2)
-    ppl_in_clumps = [reduce(vcat, (hh_ppl[k] for k in g)) for g in hgroups]
-
-    src_idxs = Int64[]
-    dst_idxs = Int64[]
-
-    for keyvec in ppl_in_clumps
-        keyvec = unique(keyvec) ## no one should be listed twice in a hh
-        n = length(keyvec) ## size of group
-        if n > 1 ## otherwise, nothing to do
-            ##hhs are fully connected
-            g = complete_graph(n)
-            for x in edges(g)
-                push!(src_idxs, p_idxs[keyvec[x.src]])
-                push!(dst_idxs, p_idxs[keyvec[x.dst]])
-            end
-        end
-    end
-
-    ## people in GQs stay put, incl non-inst GQs for now
-    ## gq ppl includes workers, so they will split their time between holiday and their patients/wards, I guess
-    ppl_in_gq = collect(values(read_gq_ppl()))
-
-    ##
-    ## TODO: should really save the GQ network in generate_sparse, so we're not generating a different one here
-    ##
-    for keyvec in ppl_in_gq
-        for (s_key, d_key) in connect_small_world(keyvec, other_K, other_K+2, other_B)
-            ## key elements 1-3 correspond to a person key
-            push!(src_idxs, p_idxs[s_key[1:3]])
-            push!(dst_idxs, p_idxs[d_key[1:3]])
-        end    
-    end
-
-    ## create sparse matrix from indices
-    adj_mat = sparse([src_idxs;dst_idxs],[dst_idxs;src_idxs],
-                        trues(length(src_idxs)+length(dst_idxs)),
-                        length(p_idxs),length(p_idxs)) ## force size to be same as overall adj matrix
-
-    ## matrix must be symmetrical, save space by only storing half
-    ser_path("jlse/holiday_adj_mat.jlse",sparse(UpperTriangular(adj_mat)))
-
-    ## also generate holiday location lookup and location contact matrices
-    ##  loc_idxs map census tracts to loc matrix columns, created in generate_location_matrices
-    loc_idxs = dser_path("jlse/loc_mat_keys.jlse")
-    cbg_idxs = Dict(k=>String31(v) for (k,v) in dser_path("jlse/cbg_idxs.jlse"))
-
-    ## the first household's location is the holiday destination; this is random, so locations with more households will have more visitors
-    hh = Dict(first(v)[2:3]=>v for v in ppl_in_clumps)
-    h_df_by_loc = groupby(DataFrame((cbg_idxs[k[2]][1:end-1], v) for (k,v) in hh), "1")
-    hh_ppl_by_loc = Dict(loc_idxs[loc["1"]]=>reduce(vcat, h_df_by_loc[loc][!,"2"]) for loc in keys(h_df_by_loc))
-    hh_idxs_by_loc = Dict(k=>[p_idxs[i] for i in v] for (k,v) in hh_ppl_by_loc)
-
-    ## assume only non-inst GQ residents are available for ephemeral local contacts
-    gq_noninst = filterv(x->x.type==:noninst1864, dser_path("jlse/gqs.jlse"))
-    ## people in GQs stay put for now
-    gq_df_by_loc = groupby(DataFrame((cbg_idxs[k[2]][1:end-1], v.residents) for (k,v) in gq_noninst), "1")
-    gq_ppl_by_loc = Dict(loc_idxs[loc["1"]]=>reduce(vcat, gq_df_by_loc[loc][!,"2"]) for loc in keys(gq_df_by_loc))
-    gq_idxs_by_loc = Dict(k=>[p_idxs[i] for i in v] for (k,v) in gq_ppl_by_loc)
-
-    res_idxs_by_loc = vecmerge(hh_idxs_by_loc, gq_idxs_by_loc)
-
-    ## columns are locations
-    res_loc_contact_mat = sparse(
-        reduce(vcat, collect(values(res_idxs_by_loc))), 
-        reduce(vcat, [fill(k,length(v)) for (k,v) in res_idxs_by_loc]),
-        trues(sum(length.(values(res_idxs_by_loc)))),
-        length(p_idxs),length(loc_idxs)
-    )
-
-    ## save holiday loc idx for each person idx, for fast lookup
-    res_loc_by_p_idx = Dict(reduce(vcat, [v .=> k for (k,v) in res_idxs_by_loc]))
-
-    ser_path("jlse/holiday_loc_contact_mat.jlse",res_loc_contact_mat)
-    ser_path("jlse/holiday_loc_lookup.jlse",res_loc_by_p_idx)
-
-    return nothing
-end
 
 

@@ -35,7 +35,8 @@ d = dser_path("jlse/people.jlse")
 df = DataFrame(sort([
             (p_id=Int(k[1]), hh_id=Int(k[2]), cbg_id=Int(k[3]), sample_index=mcon(Int,v.sample),
             age=mcon(Int,v.age), female=mcon(Int,v.female), working=mcon(Int,v.working), commuter=mcon(Int,v.commuter), 
-            commuter_LODES_low_inc=mcon(Int,v.com_LODES_low) , commuter_LODES_high_inc=mcon(Int,v.com_LODES_high),
+            commuter_income_category=mcon(Int,v.com_inc) , commuter_workplace_category=mcon(Int,v.com_cat),
+			race_black_alone=mcon(Int,v.race_black_alone), white_non_hispanic=mcon(Int,v.white_non_hispanic), hispanic=mcon(Int,v.hispanic),
             sch_grade=mcon(String,v.sch_grade))
             for (k,v) in d
             ], by=x->(x.cbg_id,x.hh_id,x.p_id)))

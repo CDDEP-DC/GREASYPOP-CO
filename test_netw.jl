@@ -445,6 +445,8 @@ y = [[x[2] for x in err_by_targ]; [x[2] for x in err_by_testvar]]
 scatter(y, label="", xticks=:none)
 
 
+scatter([x[2] for x in err_by_targ], label="", xticks=:none)
+[(x[1],x[2]) for x in err_by_targ if x[2]>0.3]
 
 
 function random_answer(glob_samp_ref::Matrix{Int64}, mask::BitVector, targ::Matrix{Int64}, n::Int64, params::Dict{Symbol, R}) where R<:Real

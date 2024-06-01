@@ -60,9 +60,10 @@
 	"commute_states": [
 		"24", "11", "51", "10", "42", "54"
 	],
+    "additional_traits": [
+        "sch_public","sch_private","female","race_black_alone","white_non_hispanic","hispanic"
+    ],
 	"LODES_annual_income_boundary": 40000,
-    "income_segregated_workplaces": 1,
-    "p_workers_in_mixed_workplaces": 0.5,
     "income_associativity_coefficient": 0.9,
     "school_associativity_coefficient": 0.9,
     "inst_res_per_worker": 10,
@@ -71,11 +72,12 @@
     "min_gq_residents": 20,
 	"n_closest_schools": 4,
 	"p_closest_school": 0.9,
-    "CO_crit_val": 10.0,
+    "CO_crit_val": 15.0,
     "CO_cooldown": 0.99,
     "CO_maxgens": 200000,
     "workplace_K": 8,
-    "school_K": 8,
+    "school_K": 12,
+    "gq_K": 12,
     "netw_K": 8,
     "netw_B": 0.25
 }
