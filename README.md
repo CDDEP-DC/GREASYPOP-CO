@@ -6,7 +6,7 @@
 * generates a synthetic population (people, households, schools, workplaces) from US census data for a specified region, at census block group (CBG) resolution
 * generates a synthetic contact network of regular household, school, and work contacts
 
-* now with income-segregated workplaces!
+* this version groups people into workplaces by industry ( for previous version(s) see Releases --> )
 
 ## files in this project
 
@@ -47,7 +47,12 @@
     ACSDT5Y####.B19001-Data.csv
     ACSDT5Y####.B22010-Data.csv
     ACSDT5Y####.B23009-Data.csv
-    DECENNIALSF1####.P32-Data.csv
+    ACSDT5Y####.B23025-Data.csv
+    ACSDT5Y####.B25006-Data.csv
+    ACSDT5Y####.B11001H-Data.csv
+    ACSDT5Y####.B11001I-Data.csv
+    ACSDT5Y####.C24010-Data.csv
+    ACSDT5Y####.C24030-Data.csv
     DECENNIALSF1####.P43-Data.csv
 
 
@@ -88,6 +93,9 @@
     aux file for every state in the synth area, named *od_aux_JT01*.csv.gz
     if many people from your synth area commute to other states, also get the *aux* file for those states
 
+#### workplace area characteristics (WAC) data from same site
+
+    one file for each state in the synth area, named *wac_S000_JT01*.csv.gz
 
 #### employer size data from https://www.census.gov/programs-surveys/cbp/data/datasets.html
 #### 2016 complete county file (more complete than later data)
@@ -124,7 +132,7 @@
 ### 3. install python and julia libraries:
 
     python 3.9.16, pandas 1.5.3, numpy 1.24.3, geopandas 0.12.2, shapely 2.0.1
-    julia 1.9.0, CSV v0.10.10, DataFrames v1.5.0, Graphs v1.8.0, InlineStrings v1.4.0, JSON v0.21.4, MatrixMarket v0.4.0, StatsBase v0.33.21
+    julia 1.9.0, CSV v0.10.10, DataFrames v1.5.0, Graphs v1.8.0, InlineStrings v1.4.0, JSON v0.21.4, MatrixMarket v0.4.0, StatsBase v0.33.21, ProportionalFitting v0.3.0
 
 ### 4. run scripts:
 
