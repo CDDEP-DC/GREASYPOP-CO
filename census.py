@@ -802,6 +802,14 @@ def read_occ_df(geos, occ_codes):
 def generate_targets(target_columns, geos, geo_xwalk, gq_stats, inc_cats, inc_cols, ind_codes, occ_codes):
     print("reading census data")
 
+    ##
+    ## a couple of cbgs in the ACS aren't in the tract-to-puma xwalk
+    ## this shouldn't happen, as ACS -2019 uses the 2010 cbg boundaries
+    ## drop them from the synth pop, I guess?
+    ## (they're also missing from the OD commute data and from geocorr2018)
+    ##
+    has_puma_idx = geo_xwalk.index[~geo_xwalk['st_puma'].isna()]
+
     ## family / nonfamily households by size
     B11016 = read_acs('B11016',geos)
     ## household types married/cohab/single/alone/own_ch_u18/other_rels/only_nonrels
@@ -952,12 +960,6 @@ def generate_targets(target_columns, geos, geo_xwalk, gq_stats, inc_cats, inc_co
     df_bounds["civ_gq_workers"] = (df_bounds["_p_civ"] * df_bounds["_gq_workers"])#.round(0)
     df_bounds["mil_gq_workers"] = (df_bounds["_p_mil"] * df_bounds["_gq_workers"])#.round(0)
 
-    if not np.all([np.isclose(df_bounds["civ_gq_workers"] + df_bounds["mil_gq_workers"] , df_bounds["_gq_workers"]).all(),
-    np.isclose(df_bounds["_gq_workers"] + df_bounds["hh_workers"] , df_bounds["total_workers"]).all(),
-    (df_bounds["hh_workers"] <= df_bounds["max_hh"]).all(),
-    (df_bounds["hh_workers"] >= df_bounds["min_hh"]).all()]):
-        print("warning: could not reconcile household and GQ employment sums for some locations")
-
     ## initial starting point for hh workers by ind/occ = ACS sums * hh workers / total workers
     df_bounds["_p_hh"] = (df_bounds["hh_workers"] / df_bounds["total_workers"]).fillna(0.0)
     ind_df = ind_df.join(df_bounds[["_p_hh"]])
@@ -970,7 +972,14 @@ def generate_targets(target_columns, geos, geo_xwalk, gq_stats, inc_cats, inc_co
         .apply(lambda s: s * occ_df["_p_hh"])
 
     ## IPF for each location that has gq workers
-    idxs = df_bounds[df_bounds["_gq_workers"]>0].index
+    idxs = gq_stats.index.intersection(has_puma_idx).intersection(df_bounds.index[df_bounds["_gq_workers"]>0])
+    df_bounds = df_bounds.loc[idxs,:].copy(deep=True)
+
+    if not np.all([np.isclose(df_bounds["civ_gq_workers"] + df_bounds["mil_gq_workers"] , df_bounds["_gq_workers"]).all(),
+    np.isclose(df_bounds["_gq_workers"] + df_bounds["hh_workers"] , df_bounds["total_workers"]).all(),
+    (df_bounds["hh_workers"] <= df_bounds["max_hh"]).all(),
+    (df_bounds["hh_workers"] >= df_bounds["min_hh"]).all()]):
+        print("warning: could not reconcile household and GQ employment sums for some locations")
 
     ## industries
     for i in idxs:
@@ -1050,28 +1059,19 @@ def generate_targets(target_columns, geos, geo_xwalk, gq_stats, inc_cats, inc_co
     for k,v in zip(inc_cats,inc_cols):
         acs_tables['B19001:'+k] = acs_tables[['B19001:'+x for x in v]].sum(axis=1)
 
-    ##
-    ## a couple of cbgs in the ACS aren't in the tract-to-puma xwalk
-    ## this shouldn't happen, as ACS -2019 uses the 2010 cbg boundaries
-    ## drop them from the synth pop, I guess?
-    ## (they're also missing from the OD commute data and from geocorr2018)
-    ##
-    missing_puma = geo_xwalk.index[geo_xwalk['st_puma'].isna()]
-    acs_tables = acs_tables[~acs_tables.index.isin(missing_puma)].copy(deep=True)
-
-    ## drop cbgs with less than 20 hh
-    acs20 = acs_tables[acs_tables['B11012:'] > 19]
-    geo_xwalk20 = geo_xwalk[geo_xwalk.index.isin(acs20.index)]
-
     print("writing census targets")
     ## csv of household counts by geography
-    acs_tables['B11012:'].to_csv(os.path.join('processed','hh_counts.csv'))
+    B11012.loc[has_puma_idx,'B11012:'].to_csv(os.path.join('processed','hh_counts.csv'))
+    ## drop cbgs with less than 20 hh
+    keep_cbg_idx = B11012.index[B11012['B11012:'] > 19].intersection(has_puma_idx)
+
     ## csv of target columns from census data
-    acs20[target_columns].to_csv(os.path.join('processed','acs_targets.csv'))
+    acs_tables.loc[keep_cbg_idx,target_columns].to_csv(os.path.join('processed','acs_targets.csv'))
     ## csv of cbg geo data
-    geo_xwalk20.to_csv(os.path.join('processed','cbg_geo.csv'))
+    geo_xwalk.loc[keep_cbg_idx,:].to_csv(os.path.join('processed','cbg_geo.csv'))
 
     return None
+
 
 
 ##
@@ -1599,6 +1599,179 @@ def main():
 
     print("")
     print("done")
+
+
+
+
+
+
+
+def generate_test_targets(geos,geo_xwalk):
+
+    ## B09002 own ch u 18 by age and family type
+    B09002 = read_acs('B09002',geos)
+    ## B19123 Families; by size and public assistance/snap
+    B19123 = read_acs('B19123',geos)
+    ## B22010 households; person with disability
+    B22010 = read_acs('B22010',geos)
+    ## B23008 Own children under 18 years in families and subfamilies
+    B23008 = read_acs('B23008',geos)
+    ## households internet access
+    B28002 = read_acs('B28002',geos)
+    ## B28006 Household population 25 years and over; educational achievement
+    B28006 = read_acs('B28006',geos)
+
+    for x in ["Under 6 years","6 to 17 years"]:
+        B23008[":".join(["B23008",x,"Living with two parents:One parent in labor force"])] = \
+            B23008[":".join(["B23008",x,"Living with two parents:Father only in labor force"])] + \
+            B23008[":".join(["B23008",x,"Living with two parents:Mother only in labor force"])]
+        for y in ["In labor force","Not in labor force"]:
+            B23008[":".join(["B23008",x,"Living with one parent",y])] = \
+                B23008[":".join(["B23008",x,"Living with one parent:Living with father",y])] + \
+                B23008[":".join(["B23008",x,"Living with one parent:Living with mother",y])]
+
+    for x in ["Under 3 years","3 and 4 years","5 years","6 to 11 years","12 to 17 years"]:
+        B09002[":".join(["B09002:In other families:Single householder, no spouse present",x])] = \
+            B09002[":".join(["B09002:In other families:Male householder, no spouse present",x])] + \
+            B09002[":".join(["B09002:In other families:Female householder, no spouse present",x])]
+        
+    for x in ["In married-couple families","In other families:Single householder, no spouse present"]:
+        B09002[":".join(["B09002",x,"3 to 5 years"])] = \
+            B09002[":".join(["B09002",x,"3 and 4 years"])] + \
+            B09002[":".join(["B09002",x,"5 years"])]
+
+    for x in ["Households with 1 or more persons with a disability","Households with no persons with a disability"]:
+        B22010[":".join(["B22010",x])] = \
+            B22010[":".join(["B22010:Household received Food Stamps/SNAP in the past 12 months",x])] + \
+            B22010[":".join(["B22010:Household did not receive Food Stamps/SNAP in the past 12 months",x])]
+        
+    ## join all census tables together
+    acs_tables = B09002.join([B19123,B22010,B23008,B28002,B28006])
+    acs_tables['state'] = acs_tables.index.map(lambda x: x[0:2])
+    acs_tables['county'] = acs_tables.index.map(lambda x: x[0:5])
+
+    ## which census columns to match:
+    target_columns = [
+        'B09002:In married-couple families:Under 3 years',
+        'B09002:In married-couple families:3 to 5 years',
+        'B09002:In married-couple families:6 to 11 years',
+        'B09002:In married-couple families:12 to 17 years',
+        'B09002:In other families:Single householder, no spouse present:Under 3 years',
+        'B09002:In other families:Single householder, no spouse present:3 to 5 years',
+        'B09002:In other families:Single householder, no spouse present:6 to 11 years',
+        'B09002:In other families:Single householder, no spouse present:12 to 17 years',
+        'B19123:2-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
+        'B19123:3-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
+        'B19123:4-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
+        'B19123:5-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
+        'B19123:6-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
+        'B19123:7-or-more-person families:With cash public assistance income or  households receiving Food Stamps/SNAP benefits in the past 12 months',
+        'B22010:Households with 1 or more persons with a disability',
+        'B23008:Under 6 years:Living with two parents:Both parents in labor force',
+        'B23008:Under 6 years:Living with two parents:One parent in labor force',    
+        'B23008:Under 6 years:Living with two parents:Neither parent in labor force',
+        'B23008:Under 6 years:Living with one parent:In labor force',
+        'B23008:Under 6 years:Living with one parent:Not in labor force',
+        'B23008:6 to 17 years:Living with two parents:Both parents in labor force',
+        'B23008:6 to 17 years:Living with two parents:One parent in labor force',    
+        'B23008:6 to 17 years:Living with two parents:Neither parent in labor force',
+        'B23008:6 to 17 years:Living with one parent:In labor force',
+        'B23008:6 to 17 years:Living with one parent:Not in labor force',
+        "B28002:With an Internet subscription",
+        "B28002:Internet access without a subscription",
+        "B28002:No Internet access",
+        "B28006:Less than high school graduate or equivalency:",
+        "B28006:High school graduate (includes equivalency) , some college or associate's degree :",
+        "B28006:Bachelor's degree or higher:"]
+
+    missing_puma = geo_xwalk.index[geo_xwalk['st_puma'].isna()]
+    acs_tables = acs_tables[~acs_tables.index.isin(missing_puma)].copy(deep=True)
+
+    ## drop cbgs with less than 20 hh
+    acs20 = acs_tables[acs_tables['B22010:'] > 19]
+    acs20[target_columns].to_csv(os.path.join('processed','test_targets.csv'))
+
+    return None
+
+
+def gen_samp_test_cols(ADJINC, inc_cats, inc_cols, LODES_cutoff):
+
+    psamp, ptotals = read_psamp(LODES_cutoff, [], [])
+    hsamp = read_hsamp(ptotals, ADJINC, inc_cats, inc_cols)
+    ## generated sample columns that match each of target_columns, in the same order:
+    sample_columns = ['own_ch_u3_in_fam_married',
+        'own_ch_3_5_in_fam_married',
+        'own_ch_6_11_in_fam_married',
+        'own_ch_12_17_in_fam_married',
+        'own_ch_u3_in_fam_unmar',
+        'own_ch_3_5_in_fam_unmar',
+        'own_ch_6_11_in_fam_unmar',
+        'own_ch_12_17_in_fam_unmar',
+        'fam_hh_2_snap_pap',
+        'fam_hh_3_snap_pap',
+        'fam_hh_4_snap_pap',
+        'fam_hh_5_snap_pap',
+        'fam_hh_6_snap_pap',
+        'fam_hh_7o_snap_pap',
+        'h_1_or_more_with_disab',
+        'esp_2p_2w_age_u6',
+        'esp_2p_1w_age_u6',
+        'esp_2p_nw_age_u6',
+        'esp_1p_1w_age_u6',
+        'esp_1p_nw_age_u6',
+        'esp_2p_2w_age_6_17',
+        'esp_2p_1w_age_6_17',
+        'esp_2p_nw_age_6_17',
+        'esp_1p_1w_age_6_17',
+        'esp_1p_nw_age_6_17',
+        'h_internet_sub',
+        'h_internet_nosub',
+        'h_no_internet',
+        'edu_not_hsgrad_age_25o',
+        'edu_hs_or_somecoll_age_25o',
+        'edu_bach_or_higher_age_25o']
+
+    ## csv of household samples
+    hsamp[sample_columns].to_csv(os.path.join('processed','test_samples.csv'))
+
+    return None
+
+
+def test_cols():
+    ## default income categories
+    inc_cats_def = ['q1_1', 'q1_2', 'q1_3', 'q2', 'q3', 'q4', 'q5']
+    inc_cols_def = [['Less than $10,000'],
+                    ['$10,000 to $14,999', '$15,000 to $19,999', '$20,000 to $24,999'],
+                    ['$25,000 to $29,999', '$30,000 to $34,999', '$35,000 to $39,999'],
+                    ['$40,000 to $44,999', '$45,000 to $49,999', '$50,000 to $59,999', '$60,000 to $74,999'],
+                    ['$75,000 to $99,999', '$100,000 to $124,999'],
+                    ['$125,000 to $149,999', '$150,000 to $199,999'],
+                    ['$200,000 or more']]
+
+    ## parameters from file config.json
+    with open("config.json", 'r') as f:
+        d = json.load(f)
+
+    ## read ADJINC
+    ADJINC = d.get("inc_adj",1.010145)
+    ## read income categories
+    inc_cats = d.get("inc_cats",inc_cats_def)
+    inc_cols = d.get("inc_cols",inc_cols_def)
+    LODES_cutoff = d.get("LODES_annual_income_boundary",40000)
+    ## read states/counties to include
+    geos = d.get("geos",None)
+    adults_hh_cbg = read_acs('B09021',geos)[['B09021:']]
+    cbg_index = adults_hh_cbg.index
+    geo_xwalk = read_geo_xwalk(cbg_index)
+
+    generate_test_targets(geos,geo_xwalk)
+    gen_samp_test_cols(ADJINC, inc_cats, inc_cols, LODES_cutoff)
+
+
+
+
+
+
 
 
 
