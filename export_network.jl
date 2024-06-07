@@ -62,25 +62,25 @@ GC.gc()
 println("index keys")
 
 d = dser_path("jlse/adj_mat_keys.jlse")
-df = DataFrame([(index=i, p_id=Int(v[1]), hh_id=Int(v[2]), cbg_id=Int(v[3])) for (i,v) in enumerate(d)])
+df = DataFrame([(index_one=i, index_zero=i-1, p_id=Int(v[1]), hh_id=Int(v[2]), cbg_id=Int(v[3])) for (i,v) in enumerate(d)])
 write_df("pop_export/adj_mat_keys.csv",df)
 
 ## indices of people commuting fron outside the synth pop area
 ##  these have no household connections
 d = dser_path("jlse/adj_dummy_keys.jlse")
 df = DataFrame(sort([
-            (index=Int64(k), p_id=Int(v[1]), hh_id=Int(v[2]), cbg_id=Int(v[3]))
+            (index_one=Int64(k), index_zero=Int64(k)-1, p_id=Int(v[1]), hh_id=Int(v[2]), cbg_id=Int(v[3]))
             for (k,v) in d
-            ], by=x->x.index))
+            ], by=x->x.index_one))
 write_df("pop_export/adj_dummy_keys.csv",df)
 
 ## indices of people working outside the synth pop area
 ##  these have no workplace connections
 d = dser_path("jlse/adj_out_workers.jlse")
 df = DataFrame(sort([
-            (index=Int64(k), p_id=Int(v[1]), hh_id=Int(v[2]), cbg_id=Int(v[3]))
+            (index_one=Int64(k), index_zero=Int64(k)-1, p_id=Int(v[1]), hh_id=Int(v[2]), cbg_id=Int(v[3]))
             for (k,v) in d
-            ], by=x->x.index))
+            ], by=x->x.index_one))
 write_df("pop_export/adj_out_workers.csv",df)
 
 println("done")
