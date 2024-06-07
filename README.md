@@ -152,5 +152,7 @@
 #### exports appear in folder "pop_export"
 #### network is exported as a sparse matrix in Matrix Market native exchange format https://math.nist.gov/MatrixMarket/formats.html#MMformat
 
-Note this is not a complete contact network for a population; it only describes contacts *within* households, group quarters, schools, and workplaces. You will probably need to generate other types of contacts depending on what you're using this for.
+The file adj_mat_keys maps the indices of the contact matrix to the people in people.csv. **NOTE** The indices in the .mtx files begin at 1. If you are reading the matrix into Juila (or R), everything will work as expected. If you read it into Python using scipy.io.mmread, it will automatically subtract 1 from all the index values to make it 0-indexed. In adj_mat_keys, refer to the column (index_one or index_zero) corresponding to how the matrix ends up getting indexed. (In the older version, subtract 1 from the "index" column if your matrix becomes 0-indexed.)
+
+Keep in mind that this is not a complete contact network for a population; it only describes contacts *within* households, group quarters, schools, and workplaces. You will probably need to generate other types of contacts depending on what you're using this for. The file adj_out_workers lists people who work outside of the synthesized area; they have jobs but are not part of any workplace network. The file adj_dummy_keys lists people who live outside but work within the synthesized area; they belong to a workplace network but are not part of any household.
 
