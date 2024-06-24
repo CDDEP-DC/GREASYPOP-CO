@@ -28,7 +28,7 @@ identifiers:
   - type: url
     value: 'https://arxiv.org/abs/2406.14698'
 repository-code: 'https://github.com/CDDEP-DC/GREASYPOP-CO'
-license: CC-BY-NC-SA-4.0
+license: AGPL-3.0
 preferred-citation:
     type: article
     authors:
