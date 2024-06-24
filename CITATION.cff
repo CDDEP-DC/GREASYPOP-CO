@@ -9,8 +9,7 @@ message: >-
 type: software
 authors:
   - family-names: Tulchinsky
-    given-names: Alexander
-    name-particle: 'Y'
+    given-names: Alexander Y.
     email: tulchinsky@onehealthtrust.org
     affiliation: One Health Trust
   - given-names: Fardad
@@ -22,8 +21,7 @@ authors:
   - given-names: Nodar
     family-names: Kipshidze
     affiliation: One Health Trust
-  - given-names: Eili
-    name-particle: 'Y'
+  - given-names: Eili Y.
     family-names: Klein
     affiliation: 'One Health Trust, Johns Hopkins School of Medicine'
 identifiers:
@@ -35,8 +33,7 @@ preferred-citation:
     type: article
     authors:
       - family-names: Tulchinsky
-        given-names: Alexander
-        name-particle: 'Y'
+        given-names: Alexander Y.
         email: tulchinsky@onehealthtrust.org
         affiliation: One Health Trust
       - given-names: Fardad
@@ -48,8 +45,7 @@ preferred-citation:
       - given-names: Nodar
         family-names: Kipshidze
         affiliation: One Health Trust
-      - given-names: Eili
-        name-particle: 'Y'
+      - given-names: Eili Y.
         family-names: Klein
         affiliation: 'One Health Trust, Johns Hopkins School of Medicine'
     journal: ArXiv
