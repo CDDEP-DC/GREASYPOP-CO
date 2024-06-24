@@ -88,29 +88,48 @@ makehub(t::AbstractGraph{T}) where T = sum(degree(t) .^ 2) / sum(degree(t))
 #f(v) = mean(v[2:end] ./ v[1:end-1])
 
 
-net_comp = Dict()
-#net_comp = dser_path("jlse/net_comp.jlse")
+#net_comp = Dict()
+net_comp = dser_path("net_comp.jlse")
 
 #M = sparse(Symmetric(dser_path("jlse/hh_adj_mat.jlse"))) .| sparse(Symmetric(dser_path("jlse/adj_mat.jlse")))
 #M = dser_path("jlse/hh_adj_mat.jlse") .| dser_path("jlse/adj_mat.jlse")
 
 x = (Edge(p) for p in zip(findnz(
-    dser_path("jlse/hh_adj_mat.jlse") .| dser_path("jlse/adj_mat.jlse")
+    dser_path("jlse/adj_mat_hh.jlse") .| dser_path("jlse/adj_mat_non_hh.jlse")
     )[1:2]...))
 
 t = SimpleGraphFromIterator(x)
-#t = dser_path("jlse/LA_simplegraph.jlse")
-
 x = nothing
 GC.gc()
 
-N = nv(t)
-n0 = sum(degree(t).==0)
+N = nv(t)  # 9424031
+n0 = sum(degree(t).==0)  # 401057
+mu = mean(degree(t)) ## 8.483098686750925
+nname = "MD"
+
+#N - n0
+#mean(filter(i->i>0,degree(t)))
+#deg_zero_i = findall(degree(t).==0)
+#rem_vertices!(t, deg_zero_i)
+#nv(t)
+#mean(degree(t))
+#nname = "MD0"
+
+
+## "static scale free" algo 
+## Goh K-I, Kahng B, Kim D: Universal behaviour of load distribution in scale-free networks. Phys Rev Lett 87(27):278701, 2001.
+
+t = nothing
+GC.gc()
+t = barabasi_albert(N, 4); nname = "BA"
+t = erdos_renyi(N, mu/N); nname = "ER"
+t = watts_strogatz(N, 8, 0.25); nname = "WS"
+t = static_scale_free(N, round(Int,0.5*mu*N), 3); nname = "SSF"
 mean(degree(t))
-adj_n0 = false
 
 
-net_comp["LA_8"] = [mean(local_clustering_coefficient(t))
+
+net_comp[nname] = [mean(local_clustering_coefficient(t))
 global_clustering_coefficient(t)
 mean(pagerank(t))
 rich_club(t,1)
@@ -121,27 +140,9 @@ mean(degree(t))
 #mean(f(diffusion_rate(t,0.1,20)) for x in 1:20)
 ]
 
-t = nothing
-GC.gc()
-#t = barabasi_albert(N, 4); adj_n0 = true
-#t = erdos_renyi(N, 8/N); adj_n0 = true
-#t = watts_strogatz(N,8,0.25); adj_n0 = true
-mean(degree(t))
+net_comp
 
-## disconnect n0 vertices
-if adj_n0
-    for x in shuffle(vertices(t))[1:n0]
-        for d in neighbors(t,x)
-            rem_edge!(t,x,d)
-        end
-    end
-end
-mean(degree(t))
-
-
-
-
-ser_path("jlse/net_comp.jlse", net_comp)
+ser_path("net_comp.jlse", net_comp)
 
 nc_names = ["local clust","global clust","pagerank","rich club","assortativity","bonchev","makehub","mean degree"]
 use_cols = [8,1,2,5,7,6]
@@ -149,6 +150,19 @@ use_cols = [8,1,2,5,7,6]
 [k=>[round(v[x];sigdigits=3) for x in use_cols] for (k,v) in net_comp]
 
 
+
+
+
+
+#adj_n0 = false
+#if adj_n0
+#    for x in shuffle(vertices(t))[1:n0]
+#        for d in neighbors(t,x)
+#            rem_edge!(t,x,d)
+#        end
+#    end
+#end
+#mean(degree(t))
 
 
 
@@ -448,6 +462,7 @@ scatter(y, label="", xticks=:none)
 scatter([x[2] for x in err_by_targ], label="", xticks=:none)
 [(x[1],x[2]) for x in err_by_targ if x[2]>0.3]
 
+[(x[1],x[2]) for x in err_by_testvar if x[2]<0.4]
 
 function random_answer(glob_samp_ref::Matrix{Int64}, mask::BitVector, targ::Matrix{Int64}, n::Int64, params::Dict{Symbol, R}) where R<:Real
     samples = glob_samp_ref[mask, :]
@@ -574,8 +589,8 @@ rand_test_scores = merge(x...)
 
 cbgs = collect(keys(scores))
 
-s05,s95 = log.(0.25 .* quantile.(Chisq(66), [0.05, 0.95]))
-t05,t95 = log.(0.25 .* quantile.(Chisq(37), [0.05, 0.95]))
+s05,s95 = log.(0.25 .* quantile.(Chisq(85), [0.05, 0.95]))
+t05,t95 = log.(0.25 .* quantile.(Chisq(31), [0.05, 0.95]))
 
 s1 = [scores[k] for k in cbgs]
 s2 = [rand_scores[k] for k in cbgs]
