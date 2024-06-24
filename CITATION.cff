@@ -1,0 +1,63 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: GREASYPOP-CO
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - family-names: Tulchinsky
+    given-names: Alexander
+    name-particle: 'Y'
+    email: tulchinsky@onehealthtrust.org
+    affiliation: One Health Trust
+  - given-names: Fardad
+    family-names: Haghpanah
+    affiliation: One Health Trust
+  - given-names: Alisa
+    family-names: Hamilton
+    affiliation: Johns Hopkins University
+  - given-names: Nodar
+    family-names: Kipshidze
+    affiliation: One Health Trust
+  - given-names: Eili
+    name-particle: 'Y'
+    family-names: Klein
+    affiliation: 'One Health Trust, Johns Hopkins School of Medicine'
+identifiers:
+  - type: url
+    value: 'https://arxiv.org/abs/2406.14698'
+repository-code: 'https://github.com/CDDEP-DC/GREASYPOP-CO'
+license: CC-BY-NC-SA-4.0
+preferred-citation:
+	type: article
+	authors:
+	  - family-names: Tulchinsky
+	    given-names: Alexander
+	    name-particle: 'Y'
+	    email: tulchinsky@onehealthtrust.org
+	    affiliation: One Health Trust
+	  - given-names: Fardad
+	    family-names: Haghpanah
+	    affiliation: One Health Trust
+	  - given-names: Alisa
+	    family-names: Hamilton
+	    affiliation: Johns Hopkins University
+	  - given-names: Nodar
+	    family-names: Kipshidze
+	    affiliation: One Health Trust
+	  - given-names: Eili
+	    name-particle: 'Y'
+	    family-names: Klein
+	    affiliation: 'One Health Trust, Johns Hopkins School of Medicine'
+	journal: ArXiv
+	title:  'Generating geographically and economically realistic large-scale synthetic contact networks: A general method using publicly available data'
+	year: 2024
+	url: 'https://arxiv.org/abs/2406.14698'
+	doi: 10.48550/arXiv.2406.14698
+    identifiers:
+      - type: other
+        value: 'arXiv:2406.14698'
+        description: 'Archive ID'
