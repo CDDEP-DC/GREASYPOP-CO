@@ -132,7 +132,7 @@ citation: Tulchinsky, A. Y., Haghpanah, F., Hamilton, A., Kipshidze, N., & Klein
 
 ### 3. install python and julia libraries:
 
-    python 3.9.16, pandas 1.5.3, numpy 1.24.3, geopandas 0.12.2, shapely 2.0.1
+    python 3.9.16, pandas 1.5.3, numpy 1.24.3, geopandas 0.12.2, shapely 2.0.1, openpyxl 3.0.10
     julia 1.9.0, CSV v0.10.10, DataFrames v1.5.0, Graphs v1.8.0, InlineStrings v1.4.0, JSON v0.21.4, MatrixMarket v0.4.0, StatsBase v0.33.21, ProportionalFitting v0.3.0
 
 ### 4. run scripts:
