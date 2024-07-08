@@ -1,20 +1,4 @@
 {
-    "geos": [
-        "24",
-        "11",
-        "51013",
-        "51059",
-        "51061",
-        "51107",
-        "51153",
-        "51179",
-        "51510",
-        "51600",
-        "51610",
-        "51630",
-        "51683",
-        "51685"
-    ],
     "inc_adj": 1.010145,
     "inc_cats": [
         "q1_1",
@@ -57,9 +41,6 @@
             "$200,000 or more"
         ]
     ],
-	"commute_states": [
-		"24", "11", "51", "10", "42", "54"
-	],
     "additional_traits": [
         "sch_public","sch_private","female","race_black_alone","white_non_hispanic","hispanic"
     ],

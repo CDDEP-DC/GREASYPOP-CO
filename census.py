@@ -22,6 +22,15 @@ import json
 
 import ipfn
 
+def tryJSON(filename):
+    try:
+        with open(filename, 'r') as f:
+            d = json.load(f)
+    except Exception as e:
+        print("warning: ",e)
+        d = {}
+    return d
+
 ## round a pandas Series to integers while preserving sum
 ## (using largest-remainder method)
 def lrRound(v):
@@ -147,6 +156,7 @@ def read_sch_data(geos=None):
         & schools['UPDATED_STATUS'].isin(['1','3','4','5','8']) ## removed closed and inactive schools
         & (schools['LEVEL'] != 'Ungraded')
         & (schools['LEVEL'] != 'Not reported')
+        & (schools['LEVEL'] != "Not applicable")
         & (schools['NOGRADES'] != 'Yes') ## can't assign students w/o grade levels
         & (schools['SCH_TYPE'] == '1') ## regular schools only
         ].copy(deep=True)
@@ -159,10 +169,15 @@ def read_sch_data(geos=None):
     ## round to int
     schools['TEACHERS'] = schools['TEACHERS'].astype(float).round().astype("Int64")
     ## if # teachers or students missing, replace with mean for that school type
+    ## (or overall mean if that's not available)
     t_na = schools['TEACHERS'].isna()
     s_na = schools['STUDENTS'].isna()
-    t_mean = schools[['LEVEL','TEACHERS']].groupby(['LEVEL'],group_keys=True).agg({'TEACHERS':(lambda x: np.int64(np.round(x.mean(skipna=True))))})
-    s_mean = schools[['LEVEL','STUDENTS']].groupby(['LEVEL'],group_keys=True).agg({'STUDENTS':(lambda x: np.int64(np.round(x.mean(skipna=True))))})
+    mean_teachers = np.int64(np.round(schools['TEACHERS'].mean()))
+    mean_students = np.int64(np.round(schools['STUDENTS'].mean()))
+    t_mean = schools[['LEVEL','TEACHERS']].groupby(['LEVEL'],group_keys=True).agg({'TEACHERS':"mean"}).fillna(mean_teachers)
+    s_mean = schools[['LEVEL','STUDENTS']].groupby(['LEVEL'],group_keys=True).agg({'STUDENTS':"mean"}).fillna(mean_students)
+    t_mean["TEACHERS"] = t_mean["TEACHERS"].astype(float).round().astype("Int64")
+    s_mean["STUDENTS"] = s_mean["STUDENTS"].astype(float).round().astype("Int64")
     schools.loc[t_na,'TEACHERS'] = t_mean.loc[schools['LEVEL']].values[t_na]
     schools.loc[s_na,'STUDENTS'] = s_mean.loc[schools['LEVEL']].values[s_na]
     return schools
@@ -702,23 +717,28 @@ def generate_gq(geos, df_adults_in_hh, geo_xwalk, p_summary, ind_codes, occ_code
 
     ## not many GQ residents represented in PUMS samples
     ## not enough to capture geographic variation in GQ employment stats
-    ## assume that by state, all GQs of the same type (civ, mil) have the same emp stats
-    agg_dict = {x:sum for x in ['PWGTP',*pcols]}
-    agg_civ = s_noninst_civ.groupby('ST',group_keys=True).agg(agg_dict)
-    p_agg_civ = agg_civ.apply(lambda x: x/agg_civ['PWGTP'], axis=0).drop(columns=['PWGTP'])
+    ## assume that all GQs of the same type (civ, mil) have the same emp stats
+    agg_civ = s_noninst_civ[['PWGTP',*pcols]].sum()
+    p_agg_civ = agg_civ.apply(lambda x: x/agg_civ["PWGTP"]).drop("PWGTP").fillna(0.0)
 
-    agg_dict_mil = {x:sum for x in ['PWGTP',*cols_mil]}
-    agg_mil = s_noninst_mil.groupby('ST',group_keys=True).agg(agg_dict_mil)
-    p_agg_mil = agg_mil.apply(lambda x: x/agg_mil['PWGTP'], axis=0).drop(columns=['PWGTP'])
+    ## a hack in case PUMS doesn't have enough samples
+    ##
+    ## TODO: get national-level data to fall back on?
+    ##
+    if len(s_noninst_mil) < 20:
+        agg_mil = pd.Series({k:0 for k in ['PWGTP',*cols_mil]})
+        agg_mil["PWGTP"] = 1
+        agg_mil["commuter_p|milGQ"] = 1
+        agg_mil["com_LODES_low_p|milGQ"] = 1
+        agg_mil["ind_ADM_MIL_p|milGQ"] = 1
+        agg_mil["occ_MIL_p|milGQ"] = 1
+    else:
+        agg_mil = s_noninst_mil[['PWGTP',*cols_mil]].sum()
 
-    ## aggregating by state, not county
-    ## for each cbg, use its puma's main county, instead of the cbg's actual county (because samples are by puma)
-    ## p_summary has each puma mapped to its main county:
-    #puma_to_county = p_summary.groupby('st_puma',group_keys=True).agg({'county':(lambda x: x.unique()[0])})
-    ##  (pandas merge() drops the index for some reason, hence the reset_index + set_index trick)
-    #df_gq = df_gq.join(geo_xwalk['st_puma']).reset_index().merge(puma_to_county,how='left',on='st_puma').set_index('Geo')
-    #df_gq = df_gq.merge(p_noninst_by_county, how='left', left_on="county", right_index=True)
-    df_gq = df_gq.join(geo_xwalk["STATEFP"]).merge(p_agg_civ, how='left', left_on="STATEFP", right_index=True).merge(p_agg_mil, how='left', left_on="STATEFP", right_index=True)
+    p_agg_mil = agg_mil.apply(lambda x: x/agg_mil['PWGTP']).drop("PWGTP").fillna(0.0)
+    
+    df_gq[p_agg_civ.index] = p_agg_civ.values
+    df_gq[p_agg_mil.index] = p_agg_mil.values
 
     keep_cols = ['group quarters:', 'group quarters:under 18', 'group quarters:18 to 64', 'group quarters:65 and over', 
         'p_u18_inst', 'p_18_64_inst', 'p_65o_inst', 'p_18_64_noninst_civil', 'p_18_64_noninst_mil',
@@ -1125,7 +1145,7 @@ def read_origin_destination(geos, commute_states):
 
     ## anyone living outside commute distance doesn't really work in the synth area
     if commute_states is not None:
-        within_commute_dist = od["h_state"].isin(commute_states)
+        within_commute_dist = (live_in_area | od["h_state"].isin(commute_states))
         work_in_area = work_in_area & within_commute_dist
 
     od["work_dest"] = od["w_cbg"]
@@ -1421,9 +1441,13 @@ def main():
                     ['$125,000 to $149,999', '$150,000 to $199,999'],
                     ['$200,000 or more']]
 
-    ## parameters from file config.json
-    with open("config.json", 'r') as f:
-        d = json.load(f)
+    ## parameters from json files
+    dgeo = tryJSON("geo.json")
+    d = tryJSON("config.json")
+
+    ## read states/counties to include
+    geos = dgeo.get("geos", d.get("geos",None))
+    commute_states = dgeo.get("commute_states", d.get("commute_states",None))
 
     ## read ADJINC
     ADJINC = d.get("inc_adj",1.010145)
@@ -1431,9 +1455,6 @@ def main():
     inc_cats = d.get("inc_cats",inc_cats_def)
     inc_cols = d.get("inc_cols",inc_cols_def)
     LODES_cutoff = d.get("LODES_annual_income_boundary",40000)
-    ## read states/counties to include
-    geos = d.get("geos",None)
-    commute_states = d.get("commute_states",None)
 
     ## additional individual (boolean) traits generated in read_psamp() to include in p_samples.csv summary
     more_summary_cols = d.get("additional_traits",
@@ -1748,9 +1769,12 @@ def test_cols():
                     ['$125,000 to $149,999', '$150,000 to $199,999'],
                     ['$200,000 or more']]
 
-    ## parameters from file config.json
-    with open("config.json", 'r') as f:
-        d = json.load(f)
+    ## parameters from json files
+    dgeo = tryJSON("geo.json")
+    d = tryJSON("config.json")
+
+    ## read states/counties to include
+    geos = dgeo.get("geos", d.get("geos",None))
 
     ## read ADJINC
     ADJINC = d.get("inc_adj",1.010145)
@@ -1758,8 +1782,6 @@ def test_cols():
     inc_cats = d.get("inc_cats",inc_cats_def)
     inc_cols = d.get("inc_cols",inc_cols_def)
     LODES_cutoff = d.get("LODES_annual_income_boundary",40000)
-    ## read states/counties to include
-    geos = d.get("geos",None)
     adults_hh_cbg = read_acs('B09021',geos)[['B09021:']]
     cbg_index = adults_hh_cbg.index
     geo_xwalk = read_geo_xwalk(cbg_index)

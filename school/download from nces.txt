@@ -1,0 +1,11 @@
+from https://nces.ed.gov/programs/edge/Geographic/SchoolLocations
+
+school locations: EDGE_GEOCODE_PUBLICSCH_*.xlsx
+GIS data: folder Shapefile_SCH
+from https://nces.ed.gov/ccd/files.asp
+
+(choose "Nonfiscal" and Level = "School" from the dropdown options)
+
+info about grades offered: "Directory" file ccd_sch_029*.csv or .zip
+enrollment data: "Membership" file ccd_sch_052*.csv or .zip
+number of teachers: "Staff" file ccd_sch_059*.csv or .zip

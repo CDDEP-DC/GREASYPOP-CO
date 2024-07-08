@@ -787,7 +787,7 @@ cap_by_school[collect(keys(p_filled))[601]]
 c10 = read_df("geo/2010_Census_Tract_to_2010_PUMA.txt";types=String)
 acs_hh = read_df("bak/hh_all.csv",types=Dict("Geo"=>String))
 od_matrix = read_df("processed/work_od_matrix_no_inc.csv"; types=Dict("h_cbg"=>String))
-dConfig = tryJSON("config.json")
+dConfig = tryJSON("geos.json")
 geos = String.(dConfig["geos"])
 
 c10[!,"Tract"] = c10.STATEFP .* c10.COUNTYFP .* c10.TRACTCE

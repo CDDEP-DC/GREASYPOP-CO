@@ -12,6 +12,70 @@ You should have received a copy of the GNU Affero General Public License along w
 
 using StatsBase
 using InlineStrings
+using SparseArrays
+
+## may change these
+const CBGkey = UInt16
+const Hnum = UInt16
+const Pnum = UInt32
+const Hkey = Tuple{Hnum,CBGkey}
+const Pkey = Tuple{Pnum,Hnum,CBGkey}
+const GQkey = Tuple{UInt16,CBGkey}
+const WRKkey = Tuple{UInt32, UInt8, String31}
+
+struct PersonData
+    hh::Hkey
+    sample::UInt32
+    age::Int16
+    working::Bool
+    commuter::Bool
+    com_cat::Union{Missing,UInt8} ## wp category (industry, etc) for placing commuters in wp's 
+    com_inc::Union{Missing,UInt8} ## income category for commuters, to make wp contact networks
+    sch_grade::Union{Missing,String3}
+    #more_traits::Dict{Symbol,Union{Missing,Bool}}
+    ## ^^ that would be nice, but several million dicts will use a lot of memory, so...
+    ## (these have to be in the same order as "additional traits" in config.json)
+    sch_public::Union{Missing,Bool}
+    sch_private::Union{Missing,Bool}
+    female::Union{Missing,Bool}
+    race_black_alone::Union{Missing,Bool}
+    white_non_hispanic::Union{Missing,Bool}
+    hispanic::Union{Missing,Bool}
+end
+
+struct Household
+    sample::UInt32
+    people::Vector{Pkey}
+end
+
+struct GQres
+    type::Symbol
+    residents::Vector{Pkey}
+end
+
+## make dicts callable, with a closure to handle missing keys
+(d::AbstractDict)(x,f::Base.Callable) = get(f,d,x)
+
+## subset of dict by keys
+dsubset(d::Dict{K,V},s) where {K<:Any,V<:Any} = Dict{K,V}(k=>d[k] for k in intersect(keys(d),s))
+
+mutable struct Indexer{I}
+    i::I
+end
+## constructor
+Indexer{T}() where {T<:Number} = Indexer(zero(T))
+## an indexer object functions like a closure
+## when called with a dict and key, returns that key's index,
+## inserts the key with a new index if it doesn't exist
+function (ix::Indexer{I})(d::Dict{K,I}, k::K) where {I<:Number, K<:Any}
+    if haskey(d,k)
+        return d[k]
+    else
+        ix.i += 1
+        d[k] = ix.i
+        return ix.i
+    end
+end
 
 ## convert to integer, missing becomes 0
 int(x::T) where T<:Real = round(Int64, x)
@@ -98,8 +162,6 @@ function colRound(m::AbstractMatrix{T}) where T<:Real
     return res
 end
 
-
-
 ## sample from a vector of counts; returns an index and depletes the counts
 ##    "AbstractArray" means this also works on 1D _views_ of a matrix
 function drawCounts!(v::AbstractArray{I}) where {I<:Integer}
@@ -117,63 +179,4 @@ function drawCounts!(v::AbstractArray{Ia}, n::Ib) where {Ia<:Integer,Ib<:Integer
         res[i] = drawCounts!(v)
     end
     return res
-end
-
-mutable struct Indexer{I}
-    i::I
-end
-## constructor
-Indexer{T}() where {T<:Number} = Indexer(zero(T))
-## an indexer object functions like a closure
-## when called with a dict and key, returns that key's index,
-## inserts the key with a new index if it doesn't exist
-function (ix::Indexer{I})(d::Dict{K,I}, k::K) where {I<:Number, K<:Any}
-    if haskey(d,k)
-        return d[k]
-    else
-        ix.i += 1
-        d[k] = ix.i
-        return ix.i
-    end
-end
-
-
-
-## may change these
-const CBGkey = UInt16
-const Hnum = UInt16
-const Pnum = UInt32
-const Hkey = Tuple{Hnum,CBGkey}
-const Pkey = Tuple{Pnum,Hnum,CBGkey}
-const GQkey = Tuple{UInt16,CBGkey}
-const WRKkey = Tuple{UInt32, UInt8, String31}
-
-struct PersonData
-    hh::Hkey
-    sample::UInt32
-    age::Int16
-    working::Bool
-    commuter::Bool
-    com_cat::Union{Missing,UInt8} ## wp category (industry, etc) for placing commuters in wp's 
-    com_inc::Union{Missing,UInt8} ## income category for commuters, to make wp contact networks
-    sch_grade::Union{Missing,String3}
-    #more_traits::Dict{Symbol,Union{Missing,Bool}}
-    ## ^^ that would be nice, but several million dicts will use a lot of memory, so...
-    ## (these have to be in the same order as "additional traits" in config.json)
-    sch_public::Union{Missing,Bool}
-    sch_private::Union{Missing,Bool}
-    female::Union{Missing,Bool}
-    race_black_alone::Union{Missing,Bool}
-    white_non_hispanic::Union{Missing,Bool}
-    hispanic::Union{Missing,Bool}
-end
-
-struct Household
-    sample::UInt32
-    people::Vector{Pkey}
-end
-
-struct GQres
-    type::Symbol
-    residents::Vector{Pkey}
 end
