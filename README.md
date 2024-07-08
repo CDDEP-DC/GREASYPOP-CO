@@ -11,21 +11,133 @@ citation: Tulchinsky, A. Y., Haghpanah, F., Hamilton, A., Kipshidze, N., & Klein
 
 ## files in this project
 
-    config.json - specify the region for which to generate the synth pop; misc other settings
+    geo.json - specify the region for which to generate the synth pop
+    config.json - misc other settings
+    download_data.R - script to download data from census API
+    pull_datasets.R - data download functions
     census.py - processes input data; converts census and PUMS to a common format; extracts school and workplace data needed for synthesis
-	CO.jl - performs combinatorial optimization: selects households for each CBG from microdata samples (PUMS)
-	synthpop.jl - script that calls functions for population synthesis from the files below
-	households.jl - fills each household from CO.jl with people generated from PUMS data; also creates group quarters (GQ)
-	schools.jl - reads school data prepared by census.py and assigns students created in households.jl
-	workplaces.jl - creates workplaces based on data from census.py and assigns workers created in households.jl; also assigns teachers to schools and staff to GQ's
-	netw.jl - generates synthetic contact network
-	utils.jl, fileutils.jl - various utility functions
-	export_synthpop.jl - exports synth pop to csv
-	export_network.jl - exports contact network to mtx
+    CO.jl - performs combinatorial optimization: selects households for each CBG from microdata samples (PUMS)
+    synthpop.jl - script that calls functions for population synthesis from the files below
+    households.jl - fills each household from CO.jl with people generated from PUMS data; also creates group quarters (GQ)
+    schools.jl - reads school data prepared by census.py and assigns students created in households.jl
+    workplaces.jl - creates workplaces based on data from census.py and assigns workers created in households.jl; also assigns teachers to schools and staff to GQ's
+    netw.jl - generates synthetic contact network
+    utils.jl, fileutils.jl - various utility functions
+    export_synthpop.jl - exports synth pop to csv
+    export_network.jl - exports contact network to mtx
 
 # how to use
 
-### 1. prepare data
+### 1. for automated data download:
+#### (downloads 2019 ACS, PUMS, and LODES data)
+#### (see below for manual download instructions)
+
+#### edit geo.json
+
+    geos: list of areas to include in the synth pop
+    only CBGs starting with these strings will be included
+    (two chars for state FIPS, 5 chars for county, more for sub-county; any combination is ok)
+
+    commute_states: list of state FIPS that are plausibly within commute distance of the synth pop
+
+    use_pums: list of state FIPS whose microdata should be used when generating cbgs by urban/rural proportion
+    (usually ok to leave this out; see methods paper for details)
+
+#### install R and required packages:
+
+    R 4.4.1, rjson, here, tidyverse, data.table, censusapi, tidycensus, lehdr, usmap, geojsonio
+
+#### obtain a census API key https://api.census.gov/data/key_signup.html
+#### paste it into download_data.R
+
+    key = "YOUR_CENSUS_API_KEY"
+
+#### run script:
+
+    Rscript download_data.R
+
+### some data must still be downloaded manually:
+
+## into folder "geo"
+#### from https://www.census.gov/programs-surveys/geography/guidance/geo-areas/pumas.html
+#### (2010 file is already in this repo)
+
+    census tract to PUMA relationship file, *Census_Tract_to*PUMA*.*
+    (census boundaries were changed in 2020; choose the year corresponding to ACS year)
+
+#### from geocorr https://mcdc.missouri.edu/applications/geocorr2018.html (if using < 2020 ACS)
+#### or https://mcdc.missouri.edu/applications/geocorr2022.html (if using >= 2020 ACS)
+#### (geocorr2018 data for all US states is already in this repo)
+
+    puma to county, rename to *puma_to_county*.*
+    puma to cbsa (latest), rename to *puma_to_cbsa*.*
+    puma to urban-rural portion, rename to *puma_urban_rural*.*
+    cbg to cbsa (latest), rename *cbg_to_cbsa*.*
+    cbg to urban-rural portion, rename to *cbg_urban_rural*.*
+
+## into folder "work"
+#### employer size data from https://www.census.gov/programs-surveys/cbp/data/datasets.html
+#### (2016 complete county file is already in this repo; more complete than later data)
+
+    cbp16co.zip
+
+## into folder "school"
+#### from https://nces.ed.gov/programs/edge/Geographic/SchoolLocations
+
+    school locations: EDGE_GEOCODE_PUBLICSCH_*.xlsx
+    GIS data: folder Shapefile_SCH
+
+#### from https://nces.ed.gov/ccd/files.asp
+#### (choose "Nonfiscal" and Level = "School" from the dropdown options)
+
+    info about grades offered: "Directory" file ccd_sch_029*.csv or .zip
+    enrollment data: "Membership" file ccd_sch_052*.csv or .zip
+    number of teachers: "Staff" file ccd_sch_059*.csv or .zip
+
+### 2. (optional) edit config.json
+
+    inc_adj: current year ADJINC from PUMS "Data Dictionary" at https://www.census.gov/programs-surveys/acs/microdata/documentation.html
+    inc_cats: arbitrary labels for income categories
+    inc_cols: corresponding sets of columns from ACS table B19001
+    income_associativity_coefficient: SBM associativity between income groups when generating workplace networks
+    school_associativity_coefficient: SBM associativity between school grades when generating school networks
+    inst_res_per_worker: # of institutional group quarters residents per staff member
+    noninst_res_per_worker: # of non-institutional group quarters residents per staff member
+    workplace_K: mean degree for workplace networks (mean # of regular work contacts)
+    school_K: mean degree for school networks (mean # of regular school contacts)
+    gq_K: mean degree for group quarters networks (mean # of contacts within group quarters)
+
+### 3. install python and julia libraries:
+
+    python 3.9.16, pandas 1.5.3, numpy 1.24.3, geopandas 0.12.2, shapely 2.0.1, openpyxl 3.0.10
+    julia 1.9.0, CSV v0.10.10, DataFrames v1.5.0, Graphs v1.8.0, InlineStrings v1.4.0, JSON v0.21.4, MatrixMarket v0.4.0, StatsBase v0.33.21, ProportionalFitting v0.3.0
+
+### 4. run scripts:
+
+    python census.py
+    julia -p auto CO.jl 
+        (searches for optimal combination of samples to match census data, takes a while)
+        (uses multiple local processors; "-p auto" uses all available cores)
+    julia synthpop.jl
+
+### 5. (optional) export population and/or network to csv
+#### if continuing in julia, the population and contact network are serialized in folder "jlse"
+#### otherwise, run export script(s):
+
+    julia export_synthpop.jl
+    julia export_network.jl
+
+#### exports appear in folder "pop_export"
+#### network is exported as a sparse matrix in Matrix Market native exchange format https://math.nist.gov/MatrixMarket/formats.html#MMformat
+
+The file adj_mat_keys maps the indices of the contact matrix to the people in people.csv. **NOTE** The indices in the .mtx files begin at 1. If you are reading the matrix into Juila (or R), everything will work as expected. If you read it into Python using scipy.io.mmread, it will automatically subtract 1 from all the index values to make it 0-indexed. In adj_mat_keys, refer to the column (index_one or index_zero) corresponding to how the matrix ends up getting indexed. (In the older version, subtract 1 from the "index" column if your matrix becomes 0-indexed.)
+
+Keep in mind that this is not a complete contact network for a population; it only describes contacts *within* households, group quarters, schools, and workplaces. You will probably need to generate other types of contacts depending on what you're using this for. The file adj_out_workers lists people who work outside of the synthesized area; they have jobs but are not part of any workplace network. The file adj_dummy_keys lists people who live outside but work within the synthesized area; they belong to a workplace network but are not part of any household.
+
+
+
+
+## manual data download
 
 ### note: currently only works with data from 2010 - 2019 (format changed in 2020)
 
@@ -75,9 +187,9 @@ citation: Tulchinsky, A. Y., Haghpanah, F., Hamilton, A., Kipshidze, N., & Klein
 #### or https://mcdc.missouri.edu/applications/geocorr2022.html (if using >= 2020 ACS)
 
     puma to county, rename to *puma_to_county*.*
-    puma to cbsa, rename to *puma_to_cbsa*.*
+    puma to cbsa (latest), rename to *puma_to_cbsa*.*
     puma to urban-rural portion, rename to *puma_urban_rural*.*
-    cbg to cbsa, rename *cbg_to_cbsa*.*
+    cbg to cbsa (latest), rename *cbg_to_cbsa*.*
     cbg to urban-rural portion, rename to *cbg_urban_rural*.*
 
 #### cbg lat-long coords from https://www2.census.gov/geo/tiger/TIGER####/BG/ where #### is year
@@ -116,44 +228,4 @@ citation: Tulchinsky, A. Y., Haghpanah, F., Hamilton, A., Kipshidze, N., & Klein
     info about grades offered: "Directory" file ccd_sch_029*.csv or .zip
     enrollment data: "Membership" file ccd_sch_052*.csv or .zip
     number of teachers: "Staff" file ccd_sch_059*.csv or .zip
-
-
-### 2. edit config.json
-
-    geos: list of areas to include in the synth pop
-    only CBGs starting with these strings will be included
-    (two chars for state FIPS, 5 chars for county, more for sub-county; any combination is ok)
-
-    inc_adj: current year ADJINC from PUMS "Data Dictionary" at https://www.census.gov/programs-surveys/acs/microdata/documentation.html
-    inc_cats: arbitrary labels for income categories
-    inc_cols: corresponding sets of columns from ACS table B19001
-
-    commute_states: state FIPS codes that are within commute distance of synth pop (include synth pop states themselves)
-
-### 3. install python and julia libraries:
-
-    python 3.9.16, pandas 1.5.3, numpy 1.24.3, geopandas 0.12.2, shapely 2.0.1, openpyxl 3.0.10
-    julia 1.9.0, CSV v0.10.10, DataFrames v1.5.0, Graphs v1.8.0, InlineStrings v1.4.0, JSON v0.21.4, MatrixMarket v0.4.0, StatsBase v0.33.21, ProportionalFitting v0.3.0
-
-### 4. run scripts:
-
-    python census.py
-    julia -p auto CO.jl 
-        (searches for optimal combination of samples to match census data, takes a while)
-        (uses multiple local processors; "-p auto" uses all available cores)
-    julia synthpop.jl
-
-### 5. (optional) export population and/or network to csv
-#### if continuing in julia, the population and contact network are serialized in folder "jlse"
-#### otherwise, run export script(s):
-
-    julia export_synthpop.jl
-    julia export_network.jl
-
-#### exports appear in folder "pop_export"
-#### network is exported as a sparse matrix in Matrix Market native exchange format https://math.nist.gov/MatrixMarket/formats.html#MMformat
-
-The file adj_mat_keys maps the indices of the contact matrix to the people in people.csv. **NOTE** The indices in the .mtx files begin at 1. If you are reading the matrix into Juila (or R), everything will work as expected. If you read it into Python using scipy.io.mmread, it will automatically subtract 1 from all the index values to make it 0-indexed. In adj_mat_keys, refer to the column (index_one or index_zero) corresponding to how the matrix ends up getting indexed. (In the older version, subtract 1 from the "index" column if your matrix becomes 0-indexed.)
-
-Keep in mind that this is not a complete contact network for a population; it only describes contacts *within* households, group quarters, schools, and workplaces. You will probably need to generate other types of contacts depending on what you're using this for. The file adj_out_workers lists people who work outside of the synthesized area; they have jobs but are not part of any workplace network. The file adj_dummy_keys lists people who live outside but work within the synthesized area; they belong to a workplace network but are not part of any household.
 
