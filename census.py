@@ -1355,7 +1355,7 @@ def generate_schools(geos):
     schools.to_csv(os.path.join('processed','schools.csv'))
 
     ## school geo data
-    fname = glob(os.path.join("school","Shapefile_SCH","EDGE_GEOCODE*.shp"))[0]
+    fname = glob(os.path.join("school","Shape*","EDGE_GEOCODE*.shp"))[0]
     sch_lon_lat_pts = gpd.read_file(fname).set_index('NCESSCH')['geometry']
     schools = pd.merge(sch_lon_lat_pts, schools, left_index=True, right_index=True)
     ## location in projection UTM 18N coords
