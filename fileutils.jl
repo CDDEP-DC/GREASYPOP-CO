@@ -1,13 +1,9 @@
 #=
-Copyright 2023 Alexander Tulchinsky
+Copyright (c) 2023 Alexander Tulchinsky
 
-This file is part of Greasypop.
+This file is part of Greasypop. Use of this source code is governed by The Clear BSD License.
 
-Greasypop is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
-
-Greasypop is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License along with Greasypop. If not, see <https://www.gnu.org/licenses/>.
+SPDX-License-Identifier: BSD-3-Clause-Clear
 =#
 
 using CSV
